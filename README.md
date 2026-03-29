@@ -36,6 +36,10 @@ The `.noxcode.json` file is stored at the project root:
   "project": "MyApp.xcodeproj",
   "scheme": "MyApp",
   "configuration": "Debug",
+  "launchArguments": ["--uitesting"],
+  "environmentVariables": {
+    "API_BASE_URL": "https://staging.example.com"
+  },
   "simulators": [
     { "udid": "ABC123...", "platform": "iOS" },
     { "udid": "DEF456...", "platform": "tvOS" }
@@ -43,6 +47,8 @@ The `.noxcode.json` file is stored at the project root:
   "derivedDataPath": ".noxcode/DerivedData"
 }
 ```
+
+`launchArguments` are appended to `xcrun simctl launch ...` and environment variables are passed with the `SIMCTL_CHILD_` prefix so they appear in the launched app environment.
 
 ## Architecture
 

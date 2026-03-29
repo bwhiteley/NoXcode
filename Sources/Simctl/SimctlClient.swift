@@ -45,8 +45,22 @@ public final class SimctlClient: Sendable {
         _ = try await runner.run("/usr/bin/xcrun", ["simctl", "install", udid, appPath])
     }
 
-    public func launch(_ udid: String, bundleId: String) async throws {
-        _ = try await runner.run("/usr/bin/xcrun", ["simctl", "launch", udid, bundleId])
+    public func launch(
+        _ udid: String,
+        bundleId: String,
+        arguments: [String] = [],
+        environmentVariables: [String: String] = [:]
+    ) async throws {
+        var simctlEnvironment = ProcessInfo.processInfo.environment
+        for (key, value) in environmentVariables {
+            simctlEnvironment["SIMCTL_CHILD_\(key)"] = value
+        }
+        let launchArgs = ["simctl", "launch", udid, bundleId] + arguments
+        _ = try await runner.run(
+            "/usr/bin/xcrun",
+            launchArgs,
+            environment: simctlEnvironment
+        )
     }
 
     public func openSimulatorApp() async throws {

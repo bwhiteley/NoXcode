@@ -91,6 +91,8 @@ public struct NoXcodeConfig: Codable, Sendable {
     public let bundleId: String?
     public let simulators: [SimulatorSelection]
     public let derivedDataPath: String?
+    public let launchArguments: [String]
+    public let environmentVariables: [String: String]
 
     public init(
         project: String,
@@ -98,7 +100,9 @@ public struct NoXcodeConfig: Codable, Sendable {
         configuration: String,
         bundleId: String? = nil,
         simulators: [SimulatorSelection],
-        derivedDataPath: String? = ".noxcode/DerivedData"
+        derivedDataPath: String? = ".noxcode/DerivedData",
+        launchArguments: [String] = [],
+        environmentVariables: [String: String] = [:]
     ) {
         self.project = project
         self.scheme = scheme
@@ -106,5 +110,30 @@ public struct NoXcodeConfig: Codable, Sendable {
         self.bundleId = bundleId
         self.simulators = simulators
         self.derivedDataPath = derivedDataPath
+        self.launchArguments = launchArguments
+        self.environmentVariables = environmentVariables
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case project
+        case scheme
+        case configuration
+        case bundleId
+        case simulators
+        case derivedDataPath
+        case launchArguments
+        case environmentVariables
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        project = try container.decode(String.self, forKey: .project)
+        scheme = try container.decode(String.self, forKey: .scheme)
+        configuration = try container.decode(String.self, forKey: .configuration)
+        bundleId = try container.decodeIfPresent(String.self, forKey: .bundleId)
+        simulators = try container.decode([SimulatorSelection].self, forKey: .simulators)
+        derivedDataPath = try container.decodeIfPresent(String.self, forKey: .derivedDataPath)
+        launchArguments = try container.decodeIfPresent([String].self, forKey: .launchArguments) ?? []
+        environmentVariables = try container.decodeIfPresent([String: String].self, forKey: .environmentVariables) ?? [:]
     }
 }

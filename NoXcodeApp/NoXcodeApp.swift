@@ -21,6 +21,8 @@ struct ContentView: View {
     @State private var configurations: [String] = []
     @State private var bundleId: String = ""
     @State private var derivedDataPath: String = ".noxcode/DerivedData"
+    @State private var commandLineArgumentsText: String = ""
+    @State private var environmentVariablesText: String = ""
     @State private var devices: [SimDevice] = []
     @State private var selection = Set<String>()
     @State private var log: String = ""
@@ -60,6 +62,26 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 TextField("Bundle ID (optional)", text: $bundleId)
                 TextField("DerivedData Path", text: $derivedDataPath)
+            }
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Command Line Arguments")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $commandLineArgumentsText)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(minHeight: 52)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Environment Variables (KEY=VALUE, one per line)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $environmentVariablesText)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(minHeight: 52)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                }
             }
             if !configLoadStatus.isEmpty {
                 Text(configLoadStatus)
@@ -148,7 +170,9 @@ struct ContentView: View {
                 configuration: configuration,
                 bundleId: bundleId.isEmpty ? nil : bundleId,
                 simulators: selections,
-                derivedDataPath: derivedDataPath
+                derivedDataPath: derivedDataPath,
+                launchArguments: parseCommandLineArguments(commandLineArgumentsText),
+                environmentVariables: parseEnvironmentVariables(environmentVariablesText)
             )
             try kit.writeConfig(config, projectPath: projectPath)
             appendLog("Saved .noxcode.json")
@@ -207,6 +231,11 @@ struct ContentView: View {
     private func applyConfig(_ config: NoXcodeConfig) {
         bundleId = config.bundleId ?? ""
         derivedDataPath = config.derivedDataPath ?? ".noxcode/DerivedData"
+        commandLineArgumentsText = config.launchArguments.joined(separator: " ")
+        environmentVariablesText = config.environmentVariables
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: "\n")
         selection = Set(config.simulators.map { $0.udid })
         if schemes.contains(config.scheme) {
             scheme = config.scheme
@@ -244,6 +273,25 @@ struct ContentView: View {
                 }
             }
         )
+    }
+
+    private func parseCommandLineArguments(_ raw: String) -> [String] {
+        raw.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    private func parseEnvironmentVariables(_ raw: String) -> [String: String] {
+        var result: [String: String] = [:]
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces)
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { continue }
+            result[key] = value
+        }
+        return result
     }
 }
 

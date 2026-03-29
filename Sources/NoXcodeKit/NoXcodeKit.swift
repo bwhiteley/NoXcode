@@ -128,7 +128,12 @@ public final class NoXcodeKit: Sendable {
                     }
                     try await self.simctl.boot(sim.udid)
                     try await self.simctl.install(sim.udid, appPath: build.appPath)
-                    try await self.simctl.launch(sim.udid, bundleId: bundleId)
+                    try await self.simctl.launch(
+                        sim.udid,
+                        bundleId: bundleId,
+                        arguments: config.launchArguments,
+                        environmentVariables: config.environmentVariables
+                    )
                     logger.log(.init("Launched \(bundleId) on \(sim.udid)."))
                 }
             }
