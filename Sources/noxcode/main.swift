@@ -58,6 +58,9 @@ struct Init: AsyncParsableCommand {
     @Option(help: "Bundle identifier override")
     var bundleId: String?
 
+    @Option(help: "StoreKit configuration file path (.storekit), relative to project directory or absolute")
+    var storekit: String?
+
     @Option(parsing: .upToNextOption, help: "Simulator UDIDs (repeatable)")
     var simulator: [String] = []
 
@@ -78,16 +81,54 @@ struct Init: AsyncParsableCommand {
             throw ValidationError("No valid simulator UDIDs provided. Use `noxcode list-sims` to see UDIDs.")
         }
 
+        let storeKitConfigurationFile = try validateStoreKitPath(
+            storekit,
+            projectPath: projectPath,
+            workingDirectory: cwd
+        )
+
         let config = NoXcodeConfig(
             project: projectPath,
             scheme: scheme,
             configuration: configuration,
             bundleId: bundleId,
+            storeKitConfigurationFile: storeKitConfigurationFile,
             simulators: selections,
             derivedDataPath: ".noxcode/DerivedData"
         )
         try kit.writeConfig(config, projectPath: projectPath)
         print("Wrote .noxcode.json for \(projectPath)")
+    }
+
+    private func validateStoreKitPath(
+        _ storekitPath: String?,
+        projectPath: String,
+        workingDirectory: URL
+    ) throws -> String? {
+        guard let storekitPath, !storekitPath.isEmpty else { return nil }
+        guard storekitPath.hasSuffix(".storekit") else {
+            throw ValidationError("--storekit must point to a .storekit file")
+        }
+
+        let projectURL = URL(fileURLWithPath: projectPath, relativeTo: workingDirectory).standardizedFileURL
+        let projectDirectoryURL = projectURL.deletingLastPathComponent()
+        let inputURL = URL(fileURLWithPath: storekitPath)
+        let resolvedURL: URL
+        if inputURL.path.hasPrefix("/") {
+            resolvedURL = inputURL.standardizedFileURL
+        } else {
+            resolvedURL = projectDirectoryURL.appendingPathComponent(storekitPath).standardizedFileURL
+        }
+
+        guard FileManager.default.fileExists(atPath: resolvedURL.path) else {
+            throw ValidationError("StoreKit file not found: \(resolvedURL.path)")
+        }
+
+        if resolvedURL.path.hasPrefix(projectDirectoryURL.path + "/") {
+            let relativePath = String(resolvedURL.path.dropFirst(projectDirectoryURL.path.count + 1))
+            return relativePath
+        }
+        return resolvedURL.path
     }
 }
 

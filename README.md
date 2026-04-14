@@ -8,6 +8,7 @@ A macOS app and CLI tool for building and launching Xcode projects on multiple s
 - Select multiple simulators (e.g., iPhone + iPad + Apple TV)
 - Choose an Xcode project, scheme, and build configuration
 - Save selections to a `.noxcode.json` config file at the project root
+- Select a `.storekit` file and apply it to simulators before launch
 - Build for all required platforms in parallel
 - Install and launch on all selected simulators
 
@@ -19,6 +20,9 @@ noxcode list-sims
 
 # Initialize a config file (interactive or with flags)
 noxcode init --project MyApp.xcodeproj --scheme MyApp --config Debug
+
+# Initialize with a StoreKit config file
+noxcode init --project MyApp.xcodeproj --scheme MyApp --config Debug --storekit MyApp/Config.storekit
 
 # Run build + install + launch using .noxcode.json
 noxcode run
@@ -36,6 +40,7 @@ The `.noxcode.json` file is stored at the project root:
   "project": "MyApp.xcodeproj",
   "scheme": "MyApp",
   "configuration": "Debug",
+  "storeKitConfigurationFile": "MyApp/Subscription_Offers.storekit",
   "launchArguments": ["--uitesting"],
   "environmentVariables": {
     "API_BASE_URL": "https://staging.example.com"
@@ -49,6 +54,7 @@ The `.noxcode.json` file is stored at the project root:
 ```
 
 `launchArguments` are appended to `xcrun simctl launch ...` and environment variables are passed with the `SIMCTL_CHILD_` prefix so they appear in the launched app environment.
+When `storeKitConfigurationFile` is set, NoXcode copies that file into each selected simulator as `Configuration.storekit` before launching the app.
 
 ## Architecture
 

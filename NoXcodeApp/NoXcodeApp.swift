@@ -20,6 +20,8 @@ struct ContentView: View {
     @State private var schemes: [String] = []
     @State private var configurations: [String] = []
     @State private var bundleId: String = ""
+    @State private var storeKitFiles: [String] = []
+    @State private var selectedStoreKitConfigurationFile: String = ""
     @State private var derivedDataPath: String = ".noxcode/DerivedData"
     @State private var commandLineArgumentsText: String = ""
     @State private var environmentVariablesText: String = ""
@@ -61,6 +63,14 @@ struct ContentView: View {
             }
             HStack(spacing: 12) {
                 TextField("Bundle ID (optional)", text: $bundleId)
+                Picker("StoreKit", selection: $selectedStoreKitConfigurationFile) {
+                    Text("None").tag("")
+                    ForEach(storeKitFiles, id: \.self) { file in
+                        Text(file).tag(file)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(minWidth: 220)
                 TextField("DerivedData Path", text: $derivedDataPath)
             }
             HStack(alignment: .top, spacing: 12) {
@@ -169,6 +179,7 @@ struct ContentView: View {
                 scheme: scheme,
                 configuration: configuration,
                 bundleId: bundleId.isEmpty ? nil : bundleId,
+                storeKitConfigurationFile: selectedStoreKitConfigurationFile.isEmpty ? nil : selectedStoreKitConfigurationFile,
                 simulators: selections,
                 derivedDataPath: derivedDataPath,
                 launchArguments: parseCommandLineArguments(commandLineArgumentsText),
@@ -207,12 +218,15 @@ struct ContentView: View {
             let info = try await kit.listProjectInfo(projectPath: projectPath)
             schemes = info.schemes.sorted()
             configurations = info.configurations.sorted()
+            storeKitFiles = try kit.listStoreKitConfigurationFiles(projectPath: projectPath)
             if let config = try? kit.readConfig(projectPath: projectPath) {
                 applyConfig(config)
                 configLoadStatus = "Loaded .noxcode.json"
             } else {
                 configLoadStatus = "No .noxcode.json found"
+                selectedStoreKitConfigurationFile = ""
             }
+            normalizeStoreKitSelection()
             if scheme.isEmpty || !schemes.contains(scheme) {
                 scheme = schemes.first ?? ""
             }
@@ -230,6 +244,7 @@ struct ContentView: View {
 
     private func applyConfig(_ config: NoXcodeConfig) {
         bundleId = config.bundleId ?? ""
+        selectedStoreKitConfigurationFile = config.storeKitConfigurationFile ?? ""
         derivedDataPath = config.derivedDataPath ?? ".noxcode/DerivedData"
         commandLineArgumentsText = config.launchArguments.joined(separator: " ")
         environmentVariablesText = config.environmentVariables
@@ -243,6 +258,7 @@ struct ContentView: View {
         if configurations.contains(config.configuration) {
             configuration = config.configuration
         }
+        normalizeStoreKitSelection()
     }
 
     private func updateBundleId() async {
@@ -292,6 +308,13 @@ struct ContentView: View {
             result[key] = value
         }
         return result
+    }
+
+    private func normalizeStoreKitSelection() {
+        guard !selectedStoreKitConfigurationFile.isEmpty else { return }
+        if !storeKitFiles.contains(selectedStoreKitConfigurationFile) {
+            selectedStoreKitConfigurationFile = ""
+        }
     }
 }
 

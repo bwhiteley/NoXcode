@@ -64,6 +64,38 @@ public final class NoXcodeKit: Sendable {
         try configStore.writeConfig(config, projectPath: projectPath)
     }
 
+    public func listStoreKitConfigurationFiles(projectPath: String) throws -> [String] {
+        let projectURL = URL(fileURLWithPath: projectPath)
+        let projectDirectoryURL = projectURL.deletingLastPathComponent()
+        let fileManager = FileManager.default
+        let entries = try fileManager.contentsOfDirectory(
+            at: projectDirectoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        var candidates: [URL] = []
+        for entry in entries {
+            var isDirectory = ObjCBool(false)
+            let exists = fileManager.fileExists(atPath: entry.path, isDirectory: &isDirectory)
+            guard exists else { continue }
+            if isDirectory.boolValue {
+                let childEntries = try fileManager.contentsOfDirectory(
+                    at: entry,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+                candidates.append(contentsOf: childEntries.filter { $0.pathExtension == "storekit" })
+            } else if entry.pathExtension == "storekit" {
+                candidates.append(entry)
+            }
+        }
+
+        return candidates
+            .map { $0.path.replacingOccurrences(of: projectDirectoryURL.path + "/", with: "") }
+            .sorted()
+    }
+
     public func run(
         config: NoXcodeConfig,
         workingDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
@@ -128,6 +160,17 @@ public final class NoXcodeKit: Sendable {
                     }
                     try await self.simctl.boot(sim.udid)
                     try await self.simctl.install(sim.udid, appPath: build.appPath)
+                    if let storeKitConfigurationFile = config.storeKitConfigurationFile,
+                       !storeKitConfigurationFile.isEmpty {
+                        try self.copyStoreKitConfigurationFile(
+                            storeKitConfigurationFile,
+                            config: config,
+                            workingDirectory: workingDirectory,
+                            simulatorUDID: sim.udid,
+                            bundleId: bundleId
+                        )
+                        logger.log(.init("Applied StoreKit config to \(sim.udid): \(storeKitConfigurationFile)"))
+                    }
                     try await self.simctl.launch(
                         sim.udid,
                         bundleId: bundleId,
@@ -180,6 +223,81 @@ public final class NoXcodeKit: Sendable {
             return bundleId
         }
         throw NSError(domain: "NoXcodeKit", code: 2, userInfo: [NSLocalizedDescriptionKey: "CFBundleIdentifier not found in Info.plist."])
+    }
+
+    private func copyStoreKitConfigurationFile(
+        _ storeKitConfigurationFile: String,
+        config: NoXcodeConfig,
+        workingDirectory: URL,
+        simulatorUDID: String,
+        bundleId: String
+    ) throws {
+        let projectURL = resolvedProjectURL(for: config, workingDirectory: workingDirectory)
+        let projectDirectoryURL = projectURL.deletingLastPathComponent()
+        let sourceURL: URL
+        if storeKitConfigurationFile.hasPrefix("/") {
+            sourceURL = URL(fileURLWithPath: storeKitConfigurationFile)
+        } else {
+            sourceURL = projectDirectoryURL.appendingPathComponent(storeKitConfigurationFile)
+        }
+
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw NSError(
+                domain: "NoXcodeKit",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "StoreKit config not found at path: \(sourceURL.path)"]
+            )
+        }
+
+        let systemRoot = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Developer/CoreSimulator/Devices")
+            .appendingPathComponent(simulatorUDID)
+            .appendingPathComponent("data/Containers/Data/System")
+        let systemContainerURL = try resolveSystemContainer(in: systemRoot)
+        let destinationDirectory = systemContainerURL
+            .appendingPathComponent("Documents/Persistence/Octane")
+            .appendingPathComponent(bundleId)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        let destinationURL = destinationDirectory.appendingPathComponent("Configuration.storekit")
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func resolvedProjectURL(for config: NoXcodeConfig, workingDirectory: URL) -> URL {
+        let configuredProjectURL = URL(fileURLWithPath: config.project)
+        if configuredProjectURL.path.hasPrefix("/") {
+            return configuredProjectURL
+        }
+        return workingDirectory.appendingPathComponent(config.project)
+    }
+
+    private func resolveSystemContainer(in systemRoot: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let children = try fileManager.contentsOfDirectory(
+            at: systemRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        let directories = children.filter { url in
+            var isDirectory = ObjCBool(false)
+            let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            return exists && isDirectory.boolValue
+        }
+        if let persistenceContainer = directories.first(where: { directory in
+            fileManager.fileExists(atPath: directory.appendingPathComponent("Documents/Persistence").path)
+        }) {
+            return persistenceContainer
+        }
+        if let first = directories.first {
+            return first
+        }
+        throw NSError(
+            domain: "NoXcodeKit",
+            code: 4,
+            userInfo: [NSLocalizedDescriptionKey: "Unable to locate simulator system container at \(systemRoot.path)"]
+        )
     }
 }
 

@@ -89,6 +89,7 @@ public struct NoXcodeConfig: Codable, Sendable {
     public let scheme: String
     public let configuration: String
     public let bundleId: String?
+    public let storeKitConfigurationFile: String?
     public let simulators: [SimulatorSelection]
     public let derivedDataPath: String?
     public let launchArguments: [String]
@@ -99,6 +100,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         scheme: String,
         configuration: String,
         bundleId: String? = nil,
+        storeKitConfigurationFile: String? = nil,
         simulators: [SimulatorSelection],
         derivedDataPath: String? = ".noxcode/DerivedData",
         launchArguments: [String] = [],
@@ -108,6 +110,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         self.scheme = scheme
         self.configuration = configuration
         self.bundleId = bundleId
+        self.storeKitConfigurationFile = storeKitConfigurationFile
         self.simulators = simulators
         self.derivedDataPath = derivedDataPath
         self.launchArguments = launchArguments
@@ -119,6 +122,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         case scheme
         case configuration
         case bundleId
+        case storeKitConfigurationFile
         case simulators
         case derivedDataPath
         case launchArguments
@@ -131,6 +135,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         scheme = try container.decode(String.self, forKey: .scheme)
         configuration = try container.decode(String.self, forKey: .configuration)
         bundleId = try container.decodeIfPresent(String.self, forKey: .bundleId)
+        storeKitConfigurationFile = try container.decodeIfPresent(String.self, forKey: .storeKitConfigurationFile)
         simulators = try container.decode([SimulatorSelection].self, forKey: .simulators)
         derivedDataPath = try container.decodeIfPresent(String.self, forKey: .derivedDataPath)
         launchArguments = try container.decodeIfPresent([String].self, forKey: .launchArguments) ?? []
