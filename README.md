@@ -42,8 +42,15 @@ The `.noxcode.json` file is stored at the project root:
   "configuration": "Debug",
   "storeKitConfigurationFile": "MyApp/Subscription_Offers.storekit",
   "launchArguments": ["--uitesting"],
+  "environmentVariableLines": [
+    "# Shared staging values",
+    "API_BASE_URL=https://staging.example.com",
+    "// Feature toggles",
+    "USE_SANDBOX_PAYMENTS=true"
+  ],
   "environmentVariables": {
-    "API_BASE_URL": "https://staging.example.com"
+    "API_BASE_URL": "https://staging.example.com",
+    "USE_SANDBOX_PAYMENTS": "true"
   },
   "simulators": [
     { "udid": "ABC123...", "platform": "iOS" },
@@ -54,6 +61,7 @@ The `.noxcode.json` file is stored at the project root:
 ```
 
 `launchArguments` are appended to `xcrun simctl launch ...` and environment variables are passed with the `SIMCTL_CHILD_` prefix so they appear in the launched app environment.
+Lines in `environmentVariableLines` that start with `#` or `//` are preserved in `.noxcode.json` but ignored when launching.
 When `storeKitConfigurationFile` is set, NoXcode copies that file into each selected simulator as `Configuration.storekit` before launching the app.
 
 ## Architecture

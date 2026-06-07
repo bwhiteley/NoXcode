@@ -93,7 +93,11 @@ public struct NoXcodeConfig: Codable, Sendable {
     public let simulators: [SimulatorSelection]
     public let derivedDataPath: String?
     public let launchArguments: [String]
-    public let environmentVariables: [String: String]
+    public let environmentVariableLines: [String]
+
+    public var environmentVariables: [String: String] {
+        Self.parseEnvironmentVariables(from: environmentVariableLines)
+    }
 
     public init(
         project: String,
@@ -104,7 +108,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         simulators: [SimulatorSelection],
         derivedDataPath: String? = ".noxcode/DerivedData",
         launchArguments: [String] = [],
-        environmentVariables: [String: String] = [:]
+        environmentVariableLines: [String] = []
     ) {
         self.project = project
         self.scheme = scheme
@@ -114,7 +118,31 @@ public struct NoXcodeConfig: Codable, Sendable {
         self.simulators = simulators
         self.derivedDataPath = derivedDataPath
         self.launchArguments = launchArguments
-        self.environmentVariables = environmentVariables
+        self.environmentVariableLines = environmentVariableLines
+    }
+
+    public init(
+        project: String,
+        scheme: String,
+        configuration: String,
+        bundleId: String? = nil,
+        storeKitConfigurationFile: String? = nil,
+        simulators: [SimulatorSelection],
+        derivedDataPath: String? = ".noxcode/DerivedData",
+        launchArguments: [String] = [],
+        environmentVariables: [String: String]
+    ) {
+        self.init(
+            project: project,
+            scheme: scheme,
+            configuration: configuration,
+            bundleId: bundleId,
+            storeKitConfigurationFile: storeKitConfigurationFile,
+            simulators: simulators,
+            derivedDataPath: derivedDataPath,
+            launchArguments: launchArguments,
+            environmentVariableLines: Self.lines(from: environmentVariables)
+        )
     }
 
     enum CodingKeys: String, CodingKey {
@@ -126,6 +154,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         case simulators
         case derivedDataPath
         case launchArguments
+        case environmentVariableLines
         case environmentVariables
     }
 
@@ -139,6 +168,55 @@ public struct NoXcodeConfig: Codable, Sendable {
         simulators = try container.decode([SimulatorSelection].self, forKey: .simulators)
         derivedDataPath = try container.decodeIfPresent(String.self, forKey: .derivedDataPath)
         launchArguments = try container.decodeIfPresent([String].self, forKey: .launchArguments) ?? []
-        environmentVariables = try container.decodeIfPresent([String: String].self, forKey: .environmentVariables) ?? [:]
+        environmentVariableLines = try Self.decodeEnvironmentVariableLines(from: container)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(project, forKey: .project)
+        try container.encode(scheme, forKey: .scheme)
+        try container.encode(configuration, forKey: .configuration)
+        try container.encodeIfPresent(bundleId, forKey: .bundleId)
+        try container.encodeIfPresent(storeKitConfigurationFile, forKey: .storeKitConfigurationFile)
+        try container.encode(simulators, forKey: .simulators)
+        try container.encodeIfPresent(derivedDataPath, forKey: .derivedDataPath)
+        try container.encode(launchArguments, forKey: .launchArguments)
+        try container.encode(environmentVariableLines, forKey: .environmentVariableLines)
+        try container.encode(environmentVariables, forKey: .environmentVariables)
+    }
+
+    private static func decodeEnvironmentVariableLines(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> [String] {
+        if let lines = try container.decodeIfPresent([String].self, forKey: .environmentVariableLines) {
+            return lines
+        }
+        if let lines = try? container.decode([String].self, forKey: .environmentVariables) {
+            return lines
+        }
+        let environmentVariables = try container.decodeIfPresent([String: String].self, forKey: .environmentVariables) ?? [:]
+        return Self.lines(from: environmentVariables)
+    }
+
+    private static func parseEnvironmentVariables(from lines: [String]) -> [String: String] {
+        var result: [String: String] = [:]
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            guard !trimmed.hasPrefix("#"), !trimmed.hasPrefix("//") else { continue }
+            let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces)
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { continue }
+            result[key] = value
+        }
+        return result
+    }
+
+    private static func lines(from environmentVariables: [String: String]) -> [String] {
+        environmentVariables
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
     }
 }

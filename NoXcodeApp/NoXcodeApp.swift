@@ -84,7 +84,7 @@ struct ContentView: View {
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Environment Variables (KEY=VALUE, one per line)")
+                    Text("Environment Variables (KEY=VALUE, one per line; # and // comments are ignored at launch)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextEditor(text: $environmentVariablesText)
@@ -121,6 +121,7 @@ struct ContentView: View {
 
             HStack {
                 Button("Save Config") { Task { await saveConfig() } }
+                    .keyboardShortcut("s", modifiers: .command)
                     .disabled(isRunning)
                 Button("Run") { Task { await runLaunch() } }
                     .disabled(isRunning)
@@ -183,7 +184,7 @@ struct ContentView: View {
                 simulators: selections,
                 derivedDataPath: derivedDataPath,
                 launchArguments: parseCommandLineArguments(commandLineArgumentsText),
-                environmentVariables: parseEnvironmentVariables(environmentVariablesText)
+                environmentVariableLines: parseEnvironmentVariableLines(environmentVariablesText)
             )
             try kit.writeConfig(config, projectPath: projectPath)
             appendLog("Saved .noxcode.json")
@@ -247,10 +248,7 @@ struct ContentView: View {
         selectedStoreKitConfigurationFile = config.storeKitConfigurationFile ?? ""
         derivedDataPath = config.derivedDataPath ?? ".noxcode/DerivedData"
         commandLineArgumentsText = config.launchArguments.joined(separator: " ")
-        environmentVariablesText = config.environmentVariables
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: "\n")
+        environmentVariablesText = config.environmentVariableLines.joined(separator: "\n")
         selection = Set(config.simulators.map { $0.udid })
         if schemes.contains(config.scheme) {
             scheme = config.scheme
@@ -295,19 +293,8 @@ struct ContentView: View {
         raw.split(whereSeparator: \.isWhitespace).map(String.init)
     }
 
-    private func parseEnvironmentVariables(_ raw: String) -> [String: String] {
-        var result: [String: String] = [:]
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { continue }
-            let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
-            guard parts.count == 2 else { continue }
-            let key = parts[0].trimmingCharacters(in: .whitespaces)
-            let value = parts[1].trimmingCharacters(in: .whitespaces)
-            guard !key.isEmpty else { continue }
-            result[key] = value
-        }
-        return result
+    private func parseEnvironmentVariableLines(_ raw: String) -> [String] {
+        raw.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     }
 
     private func normalizeStoreKitSelection() {
