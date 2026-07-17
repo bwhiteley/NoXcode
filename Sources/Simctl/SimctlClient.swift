@@ -49,13 +49,19 @@ public final class SimctlClient: Sendable {
         _ udid: String,
         bundleId: String,
         arguments: [String] = [],
-        environmentVariables: [String: String] = [:]
+        environmentVariables: [String: String] = [:],
+        terminateRunningProcess: Bool = false
     ) async throws {
         var simctlEnvironment = ProcessInfo.processInfo.environment
         for (key, value) in environmentVariables {
             simctlEnvironment["SIMCTL_CHILD_\(key)"] = value
         }
-        let launchArgs = ["simctl", "launch", udid, bundleId] + arguments
+        var launchArgs = ["simctl", "launch"]
+        if terminateRunningProcess {
+            launchArgs.append("--terminate-running-process")
+        }
+        launchArgs += [udid, bundleId]
+        launchArgs += arguments
         _ = try await runner.run(
             "/usr/bin/xcrun",
             launchArgs,

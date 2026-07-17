@@ -144,12 +144,15 @@ struct Run: AsyncParsableCommand {
     @Flag(help: "Print actions without executing them")
     var dryRun: Bool = false
 
+    @Flag(help: "Skip build + install and only (re)launch with configured args/env")
+    var rerun: Bool = false
+
     func run() async throws {
         let kit = NoXcodeKit()
         let store = ConfigStore()
         let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let projectPath = try store.resolveProjectPath(in: cwd, explicitPath: project)
         let config = try kit.readConfig(projectPath: projectPath)
-        try await kit.run(config: config, workingDirectory: cwd, dryRun: dryRun)
+        try await kit.run(config: config, workingDirectory: cwd, dryRun: dryRun, rerun: rerun)
     }
 }

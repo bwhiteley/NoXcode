@@ -100,67 +100,83 @@ public final class NoXcodeKit: Sendable {
         config: NoXcodeConfig,
         workingDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
         dryRun: Bool = false,
+        rerun: Bool = false,
         logger: RunLogger = StdoutLogger()
     ) async throws {
-        let projectPath = config.project
-        let derivedDataBase = config.derivedDataPath ?? ".noxcode/DerivedData"
-
-        let buckets = buildBuckets(for: config.simulators)
-        if buckets.isEmpty {
-            logger.log(.init("No supported simulator platforms found in config."))
-            return
-        }
-
         var buildResults: [Platform: BuildResult] = [:]
-        if dryRun {
-            for bucket in buckets {
-                logger.log(.init("Would build \(config.scheme) (\(config.configuration)) for \(bucket.platform.rawValue) SDK \(bucket.sdk)"))
-            }
+        let bundleId: String
+
+        if rerun {
+            bundleId = try await resolveBundleIdForRerun(config: config, logger: logger, dryRun: dryRun)
         } else {
-            try await withThrowingTaskGroup(of: (Platform, BuildResult).self) { group in
+            let projectPath = config.project
+            let derivedDataBase = config.derivedDataPath ?? ".noxcode/DerivedData"
+            let buckets = buildBuckets(for: config.simulators)
+            if buckets.isEmpty {
+                logger.log(.init("No supported simulator platforms found in config."))
+                return
+            }
+
+            if dryRun {
                 for bucket in buckets {
-                    group.addTask {
-                        let derivedData = "\(derivedDataBase)-\(bucket.platform.rawValue.lowercased())"
-                        let request = BuildRequest(
-                            projectPath: projectPath,
-                            scheme: config.scheme,
-                            configuration: config.configuration,
-                            sdk: bucket.sdk,
-                            destinationPlatform: bucket.destinationPlatform,
-                            derivedDataPath: derivedData
-                        )
-                        let result = try await self.xcodebuild.build(request) { line, isStderr in
-                            let prefix = isStderr ? "stderr" : "stdout"
-                            logger.log(.init("[\(bucket.platform.rawValue)] \(prefix): \(line.trimmingCharacters(in: .newlines))"))
+                    logger.log(.init("Would build \(config.scheme) (\(config.configuration)) for \(bucket.platform.rawValue) SDK \(bucket.sdk)"))
+                }
+            } else {
+                try await withThrowingTaskGroup(of: (Platform, BuildResult).self) { group in
+                    for bucket in buckets {
+                        group.addTask {
+                            let derivedData = "\(derivedDataBase)-\(bucket.platform.rawValue.lowercased())"
+                            let request = BuildRequest(
+                                projectPath: projectPath,
+                                scheme: config.scheme,
+                                configuration: config.configuration,
+                                sdk: bucket.sdk,
+                                destinationPlatform: bucket.destinationPlatform,
+                                derivedDataPath: derivedData
+                            )
+                            let result = try await self.xcodebuild.build(request) { line, isStderr in
+                                let prefix = isStderr ? "stderr" : "stdout"
+                                logger.log(.init("[\(bucket.platform.rawValue)] \(prefix): \(line.trimmingCharacters(in: .newlines))"))
+                            }
+                            return (bucket.platform, result)
                         }
-                        return (bucket.platform, result)
+                    }
+                    for try await (platform, result) in group {
+                        buildResults[platform] = result
                     }
                 }
-                for try await (platform, result) in group {
-                    buildResults[platform] = result
-                }
             }
+            bundleId = try resolveBundleId(config: config, buildResults: buildResults, logger: logger, dryRun: dryRun)
         }
 
-        let bundleId = try resolveBundleId(config: config, buildResults: buildResults, logger: logger, dryRun: dryRun)
         if dryRun {
-            logger.log(.init("Would install + launch \(bundleId) on \(config.simulators.count) simulators."))
+            if rerun {
+                logger.log(.init("Would relaunch \(bundleId) on \(config.simulators.count) simulators (skip build + install)."))
+            } else {
+                logger.log(.init("Would install + launch \(bundleId) on \(config.simulators.count) simulators."))
+            }
             return
         }
 
+        let devicesByUDID = Dictionary(
+            uniqueKeysWithValues: (try? await simctl.listDevices())?.map { ($0.udid, $0) } ?? []
+        )
         let semaphore = AsyncSemaphore(maxConcurrent: 6)
         try await withThrowingTaskGroup(of: Void.self) { group in
             for sim in config.simulators {
                 group.addTask {
                     await semaphore.acquire()
                     defer { Task { await semaphore.release() } }
-                    guard let build = buildResults[sim.platform] else {
-                        logger.log(.init("No build output for \(sim.platform.rawValue); skipping \(sim.udid)."))
-                        return
-                    }
                     try await self.simctl.boot(sim.udid)
-                    try await self.simctl.install(sim.udid, appPath: build.appPath)
-                    if let storeKitConfigurationFile = config.storeKitConfigurationFile,
+                    if !rerun {
+                        guard let build = buildResults[sim.platform] else {
+                            logger.log(.init("No build output for \(sim.platform.rawValue); skipping \(sim.udid)."))
+                            return
+                        }
+                        try await self.simctl.install(sim.udid, appPath: build.appPath)
+                    }
+                    if !rerun,
+                       let storeKitConfigurationFile = config.storeKitConfigurationFile,
                        !storeKitConfigurationFile.isEmpty {
                         try self.copyStoreKitConfigurationFile(
                             storeKitConfigurationFile,
@@ -175,9 +191,14 @@ public final class NoXcodeKit: Sendable {
                         sim.udid,
                         bundleId: bundleId,
                         arguments: config.launchArguments,
-                        environmentVariables: config.environmentVariables
+                        environmentVariables: config.environmentVariables,
+                        terminateRunningProcess: rerun
                     )
-                    logger.log(.init("Launched \(bundleId) on \(sim.udid)."))
+                    let launchVerb = rerun ? "Relaunched" : "Launched"
+                    let device = devicesByUDID[sim.udid]
+                    let deviceType = device?.name ?? "Unknown Device"
+                    let osVersion = device?.osVersion ?? "Unknown OS"
+                    logger.log(.init("\(launchVerb) \(bundleId) on \(sim.udid) (\(deviceType), OS \(osVersion))."))
                 }
             }
             try await group.waitForAll()
@@ -223,6 +244,35 @@ public final class NoXcodeKit: Sendable {
             return bundleId
         }
         throw NSError(domain: "NoXcodeKit", code: 2, userInfo: [NSLocalizedDescriptionKey: "CFBundleIdentifier not found in Info.plist."])
+    }
+
+    private func resolveBundleIdForRerun(
+        config: NoXcodeConfig,
+        logger: RunLogger,
+        dryRun: Bool
+    ) async throws -> String {
+        if let bundleId = config.bundleId {
+            return bundleId
+        }
+        if dryRun {
+            return "com.example.app"
+        }
+        if let bundleId = try await xcodebuild.bundleIdentifier(
+            projectPath: config.project,
+            scheme: config.scheme,
+            configuration: config.configuration
+        ), !bundleId.isEmpty {
+            logger.log(.init("Inferred bundleId: \(bundleId)"))
+            return bundleId
+        }
+        throw NSError(
+            domain: "NoXcodeKit",
+            code: 5,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Unable to resolve bundleId for rerun. Set bundleId in .noxcode.json or ensure xcodebuild can read PRODUCT_BUNDLE_IDENTIFIER."
+            ]
+        )
     }
 
     private func copyStoreKitConfigurationFile(

@@ -27,6 +27,9 @@ noxcode init --project MyApp.xcodeproj --scheme MyApp --config Debug --storekit 
 # Run build + install + launch using .noxcode.json
 noxcode run
 
+# Skip build + install and just relaunch with configured args/env vars
+noxcode run --rerun
+
 # Dry-run (show what would happen without executing)
 noxcode run --dry-run
 ```
