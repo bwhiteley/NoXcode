@@ -113,13 +113,7 @@ struct ContentView: View {
                         .font(.headline)
                     List(simulators) { simulator in
                         Toggle(isOn: simulatorBinding(for: simulator)) {
-                            HStack {
-                                Text(simulator.name)
-                                Spacer()
-                                Text(simulator.osDisplayName)
-                                Text(simulator.state.rawValue)
-                                Text(simulator.udid).font(.system(size: 10)).foregroundStyle(.secondary)
-                            }
+                            simulatorRow(for: simulator)
                         }
                         .toggleStyle(.checkbox)
                     }
@@ -130,13 +124,7 @@ struct ContentView: View {
                         .font(.headline)
                     List(physicalDevices) { device in
                         Toggle(isOn: physicalDeviceBinding(for: device)) {
-                            HStack {
-                                Text(device.name)
-                                Spacer()
-                                Text(device.osDisplayName)
-                                Text(device.state)
-                                Text(device.identifier).font(.system(size: 10)).foregroundStyle(.secondary)
-                            }
+                            physicalDeviceRow(for: device)
                         }
                         .toggleStyle(.checkbox)
                     }
@@ -188,7 +176,7 @@ struct ContentView: View {
 
     private func refreshDestinations() async {
         do {
-            simulators = try await kit.listSimulators()
+            simulators = sortSimulators(try await kit.listSimulators())
             let simulatorIDs = Set(simulators.map(\.udid))
             selectedSimulators = selectedSimulators.filter { simulatorIDs.contains($0) }
         } catch {
@@ -357,6 +345,121 @@ struct ContentView: View {
             selectedStoreKitConfigurationFile = ""
         }
     }
+
+    private func simulatorRow(for simulator: SimDevice) -> some View {
+        HStack(spacing: 10) {
+            Text(simulator.name)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: DestinationColumn.simulatorNameWidth, alignment: .leading)
+            Text(simulator.osDisplayName)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(width: DestinationColumn.osWidth, alignment: .leading)
+            Text(simulator.state.rawValue)
+                .font(.system(size: 11, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: DestinationColumn.simulatorStateWidth, alignment: .leading)
+            Text(simulator.udid)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func physicalDeviceRow(for device: PhysicalDevice) -> some View {
+        HStack(spacing: 10) {
+            Text(device.name)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: DestinationColumn.deviceNameWidth, alignment: .leading)
+            Text(device.osDisplayName)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(width: DestinationColumn.osWidth, alignment: .leading)
+            Text(device.state)
+                .font(.system(size: 11, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: DestinationColumn.deviceStateWidth, alignment: .leading)
+            Text(device.identifier)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func sortSimulators(_ devices: [SimDevice]) -> [SimDevice] {
+        devices.sorted { lhs, rhs in
+            let lhsPlatformRank = platformSortRank(lhs.platform)
+            let rhsPlatformRank = platformSortRank(rhs.platform)
+            if lhsPlatformRank != rhsPlatformRank {
+                return lhsPlatformRank < rhsPlatformRank
+            }
+
+            let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
+            }
+
+            let versionOrder = compareVersion(lhs.osVersion, rhs.osVersion)
+            if versionOrder != .orderedSame {
+                return versionOrder == .orderedAscending
+            }
+
+            return lhs.udid < rhs.udid
+        }
+    }
+
+    private func platformSortRank(_ platform: Platform?) -> Int {
+        switch platform {
+        case .iOS: return 0
+        case .tvOS: return 1
+        case .watchOS: return 2
+        case .visionOS: return 3
+        case .none: return 4
+        }
+    }
+
+    private func compareVersion(_ lhs: String?, _ rhs: String?) -> ComparisonResult {
+        switch (lhs, rhs) {
+        case let (left?, right?):
+            let leftComponents = versionComponents(from: left)
+            let rightComponents = versionComponents(from: right)
+            let count = max(leftComponents.count, rightComponents.count)
+            for index in 0..<count {
+                let leftValue = index < leftComponents.count ? leftComponents[index] : 0
+                let rightValue = index < rightComponents.count ? rightComponents[index] : 0
+                if leftValue != rightValue {
+                    return leftValue < rightValue ? .orderedAscending : .orderedDescending
+                }
+            }
+            return .orderedSame
+        case (.some, .none):
+            return .orderedAscending
+        case (.none, .some):
+            return .orderedDescending
+        case (.none, .none):
+            return .orderedSame
+        }
+    }
+
+    private func versionComponents(from version: String) -> [Int] {
+        version
+            .split(separator: ".")
+            .map { Int($0) ?? 0 }
+    }
+}
+
+private enum DestinationColumn {
+    static let simulatorNameWidth: CGFloat = 300
+    static let deviceNameWidth: CGFloat = 220
+    static let osWidth: CGFloat = 100
+    static let simulatorStateWidth: CGFloat = 100
+    static let deviceStateWidth: CGFloat = 150
 }
 
 private struct ViewLogger: RunLogger {
