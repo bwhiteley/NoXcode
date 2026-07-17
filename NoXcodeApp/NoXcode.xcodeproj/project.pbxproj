@@ -9,11 +9,15 @@
 /* Begin PBXBuildFile section */
 		CCA0AE552F1986D500B9CF94 /* NoXcodeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCA0AE542F1986D500B9CF94 /* NoXcodeApp.swift */; };
 		CCA0AE582F19872800B9CF94 /* NoXcodeKit in Frameworks */ = {isa = PBXBuildFile; productRef = CCA0AE572F19872800B9CF94 /* NoXcodeKit */; };
+		CCA0AE592F19872800B9CF94 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CCA0AE5A2F19872800B9CF94 /* Assets.xcassets */; };
+		CCF7AA14300AC05200CBB99B /* noxcode_icon.icon in Resources */ = {isa = PBXBuildFile; fileRef = CCF7AA13300AC05200CBB99B /* noxcode_icon.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		CCA0AE462F19862B00B9CF94 /* NoXcode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NoXcode.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CCA0AE542F1986D500B9CF94 /* NoXcodeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoXcodeApp.swift; sourceTree = "<group>"; };
+		CCA0AE5A2F19872800B9CF94 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		CCF7AA13300AC05200CBB99B /* noxcode_icon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = noxcode_icon.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -32,7 +36,9 @@
 			isa = PBXGroup;
 			children = (
 				CCA0AE542F1986D500B9CF94 /* NoXcodeApp.swift */,
+				CCA0AE5A2F19872800B9CF94 /* Assets.xcassets */,
 				CCA0AE472F19862B00B9CF94 /* Products */,
+				CCF7AA13300AC05200CBB99B /* noxcode_icon.icon */,
 			);
 			sourceTree = "<group>";
 		};
@@ -110,6 +116,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CCF7AA14300AC05200CBB99B /* noxcode_icon.icon in Resources */,
+				CCA0AE592F19872800B9CF94 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -250,8 +258,9 @@
 		CCA0AE522F19862C00B9CF94 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = noxcode_icon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -284,8 +293,9 @@
 		CCA0AE532F19862C00B9CF94 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = noxcode_icon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
