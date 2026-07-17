@@ -7,23 +7,26 @@ public struct BuildRequest: Sendable {
     public let scheme: String
     public let configuration: String
     public let sdk: String
-    public let destinationPlatform: String
+    public let destination: String
     public let derivedDataPath: String
+    public let buildSettingOverrides: [String]
 
     public init(
         projectPath: String,
         scheme: String,
         configuration: String,
         sdk: String,
-        destinationPlatform: String,
-        derivedDataPath: String
+        destination: String,
+        derivedDataPath: String,
+        buildSettingOverrides: [String] = []
     ) {
         self.projectPath = projectPath
         self.scheme = scheme
         self.configuration = configuration
         self.sdk = sdk
-        self.destinationPlatform = destinationPlatform
+        self.destination = destination
         self.derivedDataPath = derivedDataPath
+        self.buildSettingOverrides = buildSettingOverrides
     }
 }
 
@@ -52,19 +55,22 @@ public final class XcodeBuildClient: Sendable {
     }
 
     public func build(_ request: BuildRequest, streamOutput: ProcessRunner.OutputHandler? = nil) async throws -> BuildResult {
+        var command = [
+            "-skipPackageUpdates",
+            "-skipMacroValidation",
+            "-skipPackagePluginValidation",
+            "-project", request.projectPath,
+            "-scheme", request.scheme,
+            "-configuration", request.configuration,
+            "-sdk", request.sdk,
+            "-destination", request.destination,
+            "-derivedDataPath", request.derivedDataPath
+        ]
+        command += request.buildSettingOverrides
+        command.append("build")
         _ = try await runner.run(
             "/usr/bin/xcodebuild",
-            [
-                "-skipPackageUpdates",
-                "-skipMacroValidation",
-                "-skipPackagePluginValidation",
-                "-project", request.projectPath,
-                "-scheme", request.scheme,
-                "-configuration", request.configuration,
-                "-destination", "generic/platform=\(request.destinationPlatform) Simulator",
-                "-derivedDataPath", request.derivedDataPath,
-                "build"
-            ],
+            command,
             streamOutput: streamOutput
         )
 
@@ -74,18 +80,21 @@ public final class XcodeBuildClient: Sendable {
     }
 
     public func showBuildSettings(_ request: BuildRequest) async throws -> BuildSettings {
+        var command = [
+            "-showBuildSettings",
+            "-skipMacroValidation",
+            "-skipPackagePluginValidation",
+            "-project", request.projectPath,
+            "-scheme", request.scheme,
+            "-configuration", request.configuration,
+            "-sdk", request.sdk,
+            "-destination", request.destination,
+            "-derivedDataPath", request.derivedDataPath
+        ]
+        command += request.buildSettingOverrides
         let result = try await runner.run(
             "/usr/bin/xcodebuild",
-            [
-                "-showBuildSettings",
-                "-skipMacroValidation",
-                "-skipPackagePluginValidation",
-                "-project", request.projectPath,
-                "-scheme", request.scheme,
-                "-configuration", request.configuration,
-                "-destination", "generic/platform=\(request.destinationPlatform) Simulator",
-                "-derivedDataPath", request.derivedDataPath
-            ]
+            command
         )
         return try parseBuildSettings(result.stdout)
     }

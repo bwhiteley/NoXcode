@@ -25,8 +25,10 @@ struct ContentView: View {
     @State private var derivedDataPath: String = ".noxcode/DerivedData"
     @State private var commandLineArgumentsText: String = ""
     @State private var environmentVariablesText: String = ""
-    @State private var devices: [SimDevice] = []
-    @State private var selection = Set<String>()
+    @State private var simulators: [SimDevice] = []
+    @State private var physicalDevices: [PhysicalDevice] = []
+    @State private var selectedSimulators = Set<String>()
+    @State private var selectedPhysicalDevices = Set<String>()
     @State private var log: String = ""
     @State private var isRunning = false
     @State private var showProjectPicker = false
@@ -100,22 +102,45 @@ struct ContentView: View {
             }
 
             HStack {
-                Text("Simulators")
+                Text("Destinations")
                 Spacer()
-                Button("Refresh") { Task { await refreshDevices() } }
+                Button("Refresh") { Task { await refreshDestinations() } }
             }
 
-            List(devices) { device in
-                Toggle(isOn: binding(for: device)) {
-                    HStack {
-                        Text(device.name)
-                        Spacer()
-                        Text(device.osDisplayName)
-                        Text(device.state.rawValue)
-                        Text(device.udid).font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Simulators")
+                        .font(.headline)
+                    List(simulators) { simulator in
+                        Toggle(isOn: simulatorBinding(for: simulator)) {
+                            HStack {
+                                Text(simulator.name)
+                                Spacer()
+                                Text(simulator.osDisplayName)
+                                Text(simulator.state.rawValue)
+                                Text(simulator.udid).font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
                     }
                 }
-                .toggleStyle(.checkbox)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Physical Devices")
+                        .font(.headline)
+                    List(physicalDevices) { device in
+                        Toggle(isOn: physicalDeviceBinding(for: device)) {
+                            HStack {
+                                Text(device.name)
+                                Spacer()
+                                Text(device.osDisplayName)
+                                Text(device.state)
+                                Text(device.identifier).font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                    }
+                }
             }
             .frame(minHeight: 200)
 
@@ -132,7 +157,7 @@ struct ContentView: View {
                 .frame(minHeight: 120)
         }
         .padding()
-        .task { await refreshDevices() }
+        .task { await refreshDestinations() }
         .onChange(of: projectPath) { _, _ in
             Task { await loadProjectInfo() }
         }
@@ -161,19 +186,33 @@ struct ContentView: View {
         }
     }
 
-    private func refreshDevices() async {
+    private func refreshDestinations() async {
         do {
-            devices = try await kit.listSimulators()
+            simulators = try await kit.listSimulators()
+            let simulatorIDs = Set(simulators.map(\.udid))
+            selectedSimulators = selectedSimulators.filter { simulatorIDs.contains($0) }
         } catch {
             appendLog("Failed to list simulators: \(error)")
+        }
+
+        do {
+            physicalDevices = try await kit.listPhysicalDevices()
+            let physicalIDs = Set(physicalDevices.map(\.identifier))
+            selectedPhysicalDevices = selectedPhysicalDevices.filter { physicalIDs.contains($0) }
+        } catch {
+            appendLog("Failed to list physical devices: \(error)")
         }
     }
 
     private func saveConfig() async {
         do {
-            let selections = devices.compactMap { device -> SimulatorSelection? in
-                guard selection.contains(device.udid), let platform = device.platform else { return nil }
+            let simulatorSelections = simulators.compactMap { device -> SimulatorSelection? in
+                guard selectedSimulators.contains(device.udid), let platform = device.platform else { return nil }
                 return SimulatorSelection(udid: device.udid, platform: platform)
+            }
+            let physicalSelections = physicalDevices.compactMap { device -> PhysicalDeviceSelection? in
+                guard selectedPhysicalDevices.contains(device.identifier) else { return nil }
+                return PhysicalDeviceSelection(identifier: device.identifier, platform: device.platform)
             }
             let config = NoXcodeConfig(
                 project: projectPath,
@@ -181,7 +220,8 @@ struct ContentView: View {
                 configuration: configuration,
                 bundleId: bundleId.isEmpty ? nil : bundleId,
                 storeKitConfigurationFile: selectedStoreKitConfigurationFile.isEmpty ? nil : selectedStoreKitConfigurationFile,
-                simulators: selections,
+                simulators: simulatorSelections,
+                physicalDevices: physicalSelections,
                 derivedDataPath: derivedDataPath,
                 launchArguments: parseCommandLineArguments(commandLineArgumentsText),
                 environmentVariableLines: parseEnvironmentVariableLines(environmentVariablesText)
@@ -249,7 +289,8 @@ struct ContentView: View {
         derivedDataPath = config.derivedDataPath ?? ".noxcode/DerivedData"
         commandLineArgumentsText = config.launchArguments.joined(separator: " ")
         environmentVariablesText = config.environmentVariableLines.joined(separator: "\n")
-        selection = Set(config.simulators.map { $0.udid })
+        selectedSimulators = Set(config.simulators.map { $0.udid })
+        selectedPhysicalDevices = Set(config.physicalDevices.map { $0.identifier })
         if schemes.contains(config.scheme) {
             scheme = config.scheme
         }
@@ -276,14 +317,27 @@ struct ContentView: View {
         }
     }
 
-    private func binding(for device: SimDevice) -> Binding<Bool> {
+    private func simulatorBinding(for device: SimDevice) -> Binding<Bool> {
         Binding(
-            get: { selection.contains(device.udid) },
+            get: { selectedSimulators.contains(device.udid) },
             set: { isSelected in
                 if isSelected {
-                    selection.insert(device.udid)
+                    selectedSimulators.insert(device.udid)
                 } else {
-                    selection.remove(device.udid)
+                    selectedSimulators.remove(device.udid)
+                }
+            }
+        )
+    }
+
+    private func physicalDeviceBinding(for device: PhysicalDevice) -> Binding<Bool> {
+        Binding(
+            get: { selectedPhysicalDevices.contains(device.identifier) },
+            set: { isSelected in
+                if isSelected {
+                    selectedPhysicalDevices.insert(device.identifier)
+                } else {
+                    selectedPhysicalDevices.remove(device.identifier)
                 }
             }
         )
@@ -306,7 +360,12 @@ struct ContentView: View {
 }
 
 private struct ViewLogger: RunLogger {
-    let append: @Sendable (String) -> Void
-    func log(_ event: RunEvent) { append(event.message) }
+    let append: @MainActor @Sendable (String) -> Void
+
+    func log(_ event: RunEvent) {
+        Task { @MainActor in
+            append(event.message)
+        }
+    }
 }
 

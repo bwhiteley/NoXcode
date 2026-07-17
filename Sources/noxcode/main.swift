@@ -8,8 +8,8 @@ import CoreModels
 struct NoXcodeCLI: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "noxcode",
-        abstract: "Build and launch Xcode projects on multiple simulators.",
-        subcommands: [ListSims.self, Init.self, Run.self]
+        abstract: "Build and launch Xcode projects on simulators and physical devices.",
+        subcommands: [ListSims.self, ListDevices.self, Init.self, Run.self]
     )
 }
 
@@ -40,6 +40,33 @@ struct ListSims: AsyncParsableCommand {
     }
 }
 
+struct ListDevices: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "list-devices",
+        abstract: "List available physical devices."
+    )
+
+    @Flag(help: "Output JSON")
+    var json: Bool = false
+
+    func run() async throws {
+        let kit = NoXcodeKit()
+        let devices = try await kit.listPhysicalDevices()
+        if json {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(devices)
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
+        for device in devices.sorted(by: { $0.name < $1.name }) {
+            let udidSuffix = device.udid.map { " udid=\($0)" } ?? ""
+            print("\(device.name) [\(device.platform.rawValue)] \(device.identifier) \(device.state)\(udidSuffix)")
+        }
+    }
+}
+
 struct Init: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "init",
@@ -64,6 +91,9 @@ struct Init: AsyncParsableCommand {
     @Option(parsing: .upToNextOption, help: "Simulator UDIDs (repeatable)")
     var simulator: [String] = []
 
+    @Option(name: .customLong("device"), parsing: .upToNextOption, help: "Physical device identifiers or UDIDs (repeatable)")
+    var device: [String] = []
+
     func run() async throws {
         let kit = NoXcodeKit()
         let store = ConfigStore()
@@ -77,8 +107,23 @@ struct Init: AsyncParsableCommand {
             return SimulatorSelection(udid: udid, platform: platform)
         }
 
-        if selections.isEmpty {
-            throw ValidationError("No valid simulator UDIDs provided. Use `noxcode list-sims` to see UDIDs.")
+        let physicalDevices = try await kit.listPhysicalDevices()
+        let physicalByIdentifier = Dictionary(uniqueKeysWithValues: physicalDevices.map { ($0.identifier, $0) })
+        let physicalByUDID = Dictionary(
+            uniqueKeysWithValues: physicalDevices.compactMap { physical -> (String, PhysicalDevice)? in
+                guard let udid = physical.udid else { return nil }
+                return (udid, physical)
+            }
+        )
+        let physicalSelections: [PhysicalDeviceSelection] = device.compactMap { identifier in
+            guard let device = physicalByIdentifier[identifier] ?? physicalByUDID[identifier] else { return nil }
+            return PhysicalDeviceSelection(identifier: device.identifier, platform: device.platform)
+        }
+
+        if selections.isEmpty && physicalSelections.isEmpty {
+            throw ValidationError(
+                "No valid destinations provided. Use `noxcode list-sims` and `noxcode list-devices` to see identifiers."
+            )
         }
 
         let storeKitConfigurationFile = try validateStoreKitPath(
@@ -94,6 +139,7 @@ struct Init: AsyncParsableCommand {
             bundleId: bundleId,
             storeKitConfigurationFile: storeKitConfigurationFile,
             simulators: selections,
+                physicalDevices: physicalSelections,
             derivedDataPath: ".noxcode/DerivedData"
         )
         try kit.writeConfig(config, projectPath: projectPath)

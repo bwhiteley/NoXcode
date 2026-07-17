@@ -27,6 +27,10 @@ let package = Package(
             dependencies: ["CoreModels", "ProcessRunner"]
         ),
         .target(
+            name: "Devicectl",
+            dependencies: ["CoreModels", "ProcessRunner"]
+        ),
+        .target(
             name: "XcodeBuild",
             dependencies: ["CoreModels", "ProcessRunner"]
         ),
@@ -40,6 +44,7 @@ let package = Package(
                 "CoreModels",
                 "ProcessRunner",
                 "Simctl",
+                "Devicectl",
                 "XcodeBuild",
                 "ProjectConfig"
             ]

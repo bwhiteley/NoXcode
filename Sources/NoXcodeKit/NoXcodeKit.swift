@@ -2,6 +2,7 @@ import Foundation
 import CoreModels
 import ProcessRunner
 import Simctl
+import Devicectl
 import XcodeBuild
 import ProjectConfig
 
@@ -20,28 +21,45 @@ public struct StdoutLogger: RunLogger {
 }
 
 public struct BuildBucket: Sendable {
-    public let platform: Platform
+    public let key: BuildBucketKey
     public let sdk: String
-    public let destinationPlatform: String
+    public let destination: String
+}
+
+public enum BuildTarget: String, Codable, Hashable, Sendable {
+    case simulator
+    case physicalDevice
+}
+
+public struct BuildBucketKey: Hashable, Sendable {
+    public let platform: Platform
+    public let target: BuildTarget
 }
 
 public final class NoXcodeKit: Sendable {
     private let simctl: SimctlClient
+    private let devicectl: DevicectlClient
     private let xcodebuild: XcodeBuildClient
     private let configStore: ConfigStore
 
     public init(
         simctl: SimctlClient = SimctlClient(),
+        devicectl: DevicectlClient = DevicectlClient(),
         xcodebuild: XcodeBuildClient = XcodeBuildClient(),
         configStore: ConfigStore = ConfigStore()
     ) {
         self.simctl = simctl
+        self.devicectl = devicectl
         self.xcodebuild = xcodebuild
         self.configStore = configStore
     }
 
     public func listSimulators() async throws -> [SimDevice] {
         try await simctl.listDevices()
+    }
+
+    public func listPhysicalDevices() async throws -> [PhysicalDevice] {
+        try await devicectl.listDevices()
     }
 
     public func listProjectInfo(projectPath: String) async throws -> XcodeProjectInfo {
@@ -103,7 +121,12 @@ public final class NoXcodeKit: Sendable {
         rerun: Bool = false,
         logger: RunLogger = StdoutLogger()
     ) async throws {
-        var buildResults: [Platform: BuildResult] = [:]
+        if config.simulators.isEmpty && config.physicalDevices.isEmpty {
+            logger.log(.init("No simulators or physical devices selected in config."))
+            return
+        }
+
+        var buildResults: [BuildBucketKey: BuildResult] = [:]
         let bundleId: String
 
         if rerun {
@@ -111,38 +134,53 @@ public final class NoXcodeKit: Sendable {
         } else {
             let projectPath = config.project
             let derivedDataBase = config.derivedDataPath ?? ".noxcode/DerivedData"
-            let buckets = buildBuckets(for: config.simulators)
+            let buckets = buildBuckets(
+                forSimulators: config.simulators,
+                physicalDevices: config.physicalDevices
+            )
             if buckets.isEmpty {
-                logger.log(.init("No supported simulator platforms found in config."))
+                logger.log(.init("No supported platforms found in config."))
                 return
             }
 
             if dryRun {
                 for bucket in buckets {
-                    logger.log(.init("Would build \(config.scheme) (\(config.configuration)) for \(bucket.platform.rawValue) SDK \(bucket.sdk)"))
+                    let targetName = bucket.key.target == .simulator ? "simulators" : "physical devices"
+                    logger.log(
+                        .init(
+                            "Would build \(config.scheme) (\(config.configuration)) for \(bucket.key.platform.rawValue) \(targetName) SDK \(bucket.sdk)"
+                        )
+                    )
                 }
             } else {
-                try await withThrowingTaskGroup(of: (Platform, BuildResult).self) { group in
+                try await withThrowingTaskGroup(of: (BuildBucketKey, BuildResult).self) { group in
                     for bucket in buckets {
                         group.addTask {
-                            let derivedData = "\(derivedDataBase)-\(bucket.platform.rawValue.lowercased())"
+                            let targetSuffix = bucket.key.target == .simulator ? "simulator" : "physical"
+                            let derivedData = "\(derivedDataBase)-\(bucket.key.platform.rawValue.lowercased())-\(targetSuffix)"
                             let request = BuildRequest(
                                 projectPath: projectPath,
                                 scheme: config.scheme,
                                 configuration: config.configuration,
                                 sdk: bucket.sdk,
-                                destinationPlatform: bucket.destinationPlatform,
-                                derivedDataPath: derivedData
+                                destination: bucket.destination,
+                                derivedDataPath: derivedData,
+                                buildSettingOverrides: self.buildSettingOverrides(for: bucket)
                             )
                             let result = try await self.xcodebuild.build(request) { line, isStderr in
                                 let prefix = isStderr ? "stderr" : "stdout"
-                                logger.log(.init("[\(bucket.platform.rawValue)] \(prefix): \(line.trimmingCharacters(in: .newlines))"))
+                                let destinationName = bucket.key.target == .simulator ? "simulator" : "device"
+                                logger.log(
+                                    .init(
+                                        "[\(bucket.key.platform.rawValue) \(destinationName)] \(prefix): \(line.trimmingCharacters(in: .newlines))"
+                                    )
+                                )
                             }
-                            return (bucket.platform, result)
+                            return (bucket.key, result)
                         }
                     }
-                    for try await (platform, result) in group {
-                        buildResults[platform] = result
+                    for try await (key, result) in group {
+                        buildResults[key] = result
                     }
                 }
             }
@@ -150,16 +188,29 @@ public final class NoXcodeKit: Sendable {
         }
 
         if dryRun {
+            let targetsSummary = "\(config.simulators.count) simulators and \(config.physicalDevices.count) physical devices"
             if rerun {
-                logger.log(.init("Would relaunch \(bundleId) on \(config.simulators.count) simulators (skip build + install)."))
+                logger.log(.init("Would relaunch \(bundleId) on \(targetsSummary) (skip build + install)."))
             } else {
-                logger.log(.init("Would install + launch \(bundleId) on \(config.simulators.count) simulators."))
+                logger.log(.init("Would install + launch \(bundleId) on \(targetsSummary)."))
             }
             return
         }
 
-        let devicesByUDID = Dictionary(
-            uniqueKeysWithValues: (try? await simctl.listDevices())?.map { ($0.udid, $0) } ?? []
+        let simulatorDevicesByUDID = config.simulators.isEmpty
+            ? [:]
+            : Dictionary(uniqueKeysWithValues: (try? await simctl.listDevices())?.map { ($0.udid, $0) } ?? [])
+        let physicalDevices = config.physicalDevices.isEmpty
+            ? []
+            : ((try? await devicectl.listDevices()) ?? [])
+        let physicalDevicesByIdentifier = Dictionary(
+            uniqueKeysWithValues: physicalDevices.map { ($0.identifier, $0) }
+        )
+        let physicalDevicesByUDID = Dictionary(
+            uniqueKeysWithValues: physicalDevices.compactMap { device -> (String, PhysicalDevice)? in
+                guard let udid = device.udid else { return nil }
+                return (udid, device)
+            }
         )
         let semaphore = AsyncSemaphore(maxConcurrent: 6)
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -169,7 +220,8 @@ public final class NoXcodeKit: Sendable {
                     defer { Task { await semaphore.release() } }
                     try await self.simctl.boot(sim.udid)
                     if !rerun {
-                        guard let build = buildResults[sim.platform] else {
+                        let key = BuildBucketKey(platform: sim.platform, target: .simulator)
+                        guard let build = buildResults[key] else {
                             logger.log(.init("No build output for \(sim.platform.rawValue); skipping \(sim.udid)."))
                             return
                         }
@@ -195,37 +247,150 @@ public final class NoXcodeKit: Sendable {
                         terminateRunningProcess: rerun
                     )
                     let launchVerb = rerun ? "Relaunched" : "Launched"
-                    let device = devicesByUDID[sim.udid]
+                    let device = simulatorDevicesByUDID[sim.udid]
                     let deviceType = device?.name ?? "Unknown Device"
                     let osVersion = device?.osVersion ?? "Unknown OS"
                     logger.log(.init("\(launchVerb) \(bundleId) on \(sim.udid) (\(deviceType), OS \(osVersion))."))
                 }
             }
+
+            for physicalDevice in config.physicalDevices {
+                group.addTask {
+                    await semaphore.acquire()
+                    defer { Task { await semaphore.release() } }
+                    if !rerun {
+                        let key = BuildBucketKey(platform: physicalDevice.platform, target: .physicalDevice)
+                        guard let build = buildResults[key] else {
+                            logger.log(
+                                .init(
+                                    "No build output for \(physicalDevice.platform.rawValue); skipping \(physicalDevice.identifier)."
+                                )
+                            )
+                            return
+                        }
+                        try await self.devicectl.install(physicalDevice.identifier, appPath: build.appPath)
+                    }
+                    try await self.devicectl.launch(
+                        physicalDevice.identifier,
+                        bundleId: bundleId,
+                        arguments: config.launchArguments,
+                        environmentVariables: config.environmentVariables,
+                        terminateRunningProcess: rerun
+                    )
+                    let launchVerb = rerun ? "Relaunched" : "Launched"
+                    let resolvedDevice = physicalDevicesByIdentifier[physicalDevice.identifier]
+                        ?? physicalDevicesByUDID[physicalDevice.identifier]
+                    let deviceName = resolvedDevice?.name ?? "Unknown Device"
+                    let osVersion = resolvedDevice?.osVersion ?? "Unknown OS"
+                    logger.log(
+                        .init(
+                            "\(launchVerb) \(bundleId) on \(physicalDevice.identifier) (\(deviceName), OS \(osVersion))."
+                        )
+                    )
+                }
+            }
             try await group.waitForAll()
         }
 
-        try await simctl.openSimulatorApp()
+        if !config.simulators.isEmpty {
+            try await simctl.openSimulatorApp()
+        }
     }
 
-    private func buildBuckets(for simulators: [SimulatorSelection]) -> [BuildBucket] {
-        let platforms = Set(simulators.map { $0.platform })
-        return platforms.compactMap { platform in
-            switch platform {
-            case .iOS:
-                return BuildBucket(platform: .iOS, sdk: "iphonesimulator", destinationPlatform: "iOS")
-            case .tvOS:
-                return BuildBucket(platform: .tvOS, sdk: "appletvsimulator", destinationPlatform: "tvOS")
-            case .watchOS:
-                return BuildBucket(platform: .watchOS, sdk: "watchsimulator", destinationPlatform: "watchOS")
-            case .visionOS:
-                return BuildBucket(platform: .visionOS, sdk: "xrsimulator", destinationPlatform: "visionOS")
-            }
+    private func buildBuckets(
+        forSimulators simulators: [SimulatorSelection],
+        physicalDevices: [PhysicalDeviceSelection]
+    ) -> [BuildBucket] {
+        var buckets: [BuildBucket] = []
+        let simulatorPlatforms = Set(simulators.map(\.platform)).sorted { $0.rawValue < $1.rawValue }
+        let physicalPlatforms = Set(physicalDevices.map(\.platform)).sorted { $0.rawValue < $1.rawValue }
+
+        buckets.append(contentsOf: simulatorPlatforms.compactMap(simulatorBuildBucket(for:)))
+        buckets.append(contentsOf: physicalPlatforms.compactMap(physicalBuildBucket(for:)))
+        return buckets
+    }
+
+    private func simulatorBuildBucket(for platform: Platform) -> BuildBucket? {
+        switch platform {
+        case .iOS:
+            return BuildBucket(
+                key: BuildBucketKey(platform: .iOS, target: .simulator),
+                sdk: "iphonesimulator",
+                destination: "generic/platform=iOS Simulator"
+            )
+        case .tvOS:
+            return BuildBucket(
+                key: BuildBucketKey(platform: .tvOS, target: .simulator),
+                sdk: "appletvsimulator",
+                destination: "generic/platform=tvOS Simulator"
+            )
+        case .watchOS:
+            return BuildBucket(
+                key: BuildBucketKey(platform: .watchOS, target: .simulator),
+                sdk: "watchsimulator",
+                destination: "generic/platform=watchOS Simulator"
+            )
+        case .visionOS:
+            return BuildBucket(
+                key: BuildBucketKey(platform: .visionOS, target: .simulator),
+                sdk: "xrsimulator",
+                destination: "generic/platform=visionOS Simulator"
+            )
         }
+    }
+
+    private func physicalBuildBucket(for platform: Platform) -> BuildBucket? {
+        switch platform {
+        case .iOS:
+            return BuildBucket(
+                key: BuildBucketKey(platform: .iOS, target: .physicalDevice),
+                sdk: "iphoneos",
+                destination: "generic/platform=iOS"
+            )
+        case .tvOS:
+            return BuildBucket(
+                key: BuildBucketKey(platform: .tvOS, target: .physicalDevice),
+                sdk: "appletvos",
+                destination: "generic/platform=tvOS"
+            )
+        case .watchOS:
+            return BuildBucket(
+                key: BuildBucketKey(platform: .watchOS, target: .physicalDevice),
+                sdk: "watchos",
+                destination: "generic/platform=watchOS"
+            )
+        case .visionOS:
+            return BuildBucket(
+                key: BuildBucketKey(platform: .visionOS, target: .physicalDevice),
+                sdk: "xros",
+                destination: "generic/platform=visionOS"
+            )
+        }
+    }
+
+    private func buildSettingOverrides(for bucket: BuildBucket) -> [String] {
+        guard bucket.key.target == .simulator, shouldForceArm64SimulatorBuilds else {
+            return []
+        }
+        // On Apple Silicon, default simulator builds to arm64 to avoid x86_64 slices.
+        return [
+            "ARCHS=arm64",
+            "ONLY_ACTIVE_ARCH=YES",
+            "EXCLUDED_ARCHS=x86_64"
+        ]
+    }
+
+    private var shouldForceArm64SimulatorBuilds: Bool {
+        #if arch(arm64)
+        true
+        #else
+        false
+        #endif
     }
 
     private func resolveBundleId(
         config: NoXcodeConfig,
-        buildResults: [Platform: BuildResult],
+        buildResults: [BuildBucketKey: BuildResult],
         logger: RunLogger,
         dryRun: Bool
     ) throws -> String {

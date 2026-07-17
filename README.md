@@ -1,16 +1,18 @@
 # NoXcode
 
-A macOS app and CLI tool for building and launching Xcode projects on multiple simulators in parallel.
+A macOS app and CLI tool for building and launching Xcode projects on simulators and physical devices in parallel.
 
 ## Features
 
 - List available iOS, tvOS, watchOS, and visionOS simulators
 - Select multiple simulators (e.g., iPhone + iPad + Apple TV)
+- Select multiple physical devices alongside simulators
 - Choose an Xcode project, scheme, and build configuration
 - Save selections to a `.noxcode.json` config file at the project root
 - Select a `.storekit` file and apply it to simulators before launch
-- Build for all required platforms in parallel
-- Install and launch on all selected simulators
+- Build for all required platforms and destination types in parallel
+- Install and launch on all selected simulators and physical devices
+- On Apple Silicon, simulator builds default to arm64-only (skips x86_64 slices)
 
 ## CLI Usage
 
@@ -18,8 +20,16 @@ A macOS app and CLI tool for building and launching Xcode projects on multiple s
 # List available simulators
 noxcode list-sims
 
+# List available physical devices
+noxcode list-devices
+
 # Initialize a config file (interactive or with flags)
 noxcode init --project MyApp.xcodeproj --scheme MyApp --config Debug
+
+# Initialize with simulators and physical devices
+noxcode init --project MyApp.xcodeproj --scheme MyApp --config Debug \
+  --simulator ABC123... --simulator DEF456... \
+  --device 00008030-... --device A4E48F13-...
 
 # Initialize with a StoreKit config file
 noxcode init --project MyApp.xcodeproj --scheme MyApp --config Debug --storekit MyApp/Config.storekit
@@ -55,6 +65,9 @@ The `.noxcode.json` file is stored at the project root:
     "API_BASE_URL": "https://staging.example.com",
     "USE_SANDBOX_PAYMENTS": "true"
   },
+  "physicalDevices": [
+    { "identifier": "A4E48F13-...", "platform": "iOS" }
+  ],
   "simulators": [
     { "udid": "ABC123...", "platform": "iOS" },
     { "udid": "DEF456...", "platform": "tvOS" }
@@ -63,7 +76,8 @@ The `.noxcode.json` file is stored at the project root:
 }
 ```
 
-`launchArguments` are appended to `xcrun simctl launch ...` and environment variables are passed with the `SIMCTL_CHILD_` prefix so they appear in the launched app environment.
+`launchArguments` are appended to both `xcrun simctl launch ...` and `xcrun devicectl device process launch ...`.
+Environment variables are passed with the `SIMCTL_CHILD_` prefix on simulators and through `--environment-variables` for physical devices.
 Lines in `environmentVariableLines` that start with `#` or `//` are preserved in `.noxcode.json` but ignored when launching.
 When `storeKitConfigurationFile` is set, NoXcode copies that file into each selected simulator as `Configuration.storekit` before launching the app.
 
@@ -74,6 +88,7 @@ Sources/
 ├── CoreModels/       # Shared data models (Platform, SimDevice, Config, etc.)
 ├── ProcessRunner/    # Async subprocess execution with streaming output
 ├── Simctl/           # xcrun simctl wrapper (list, boot, install, launch)
+├── Devicectl/        # xcrun devicectl wrapper for physical devices
 ├── XcodeBuild/       # xcodebuild wrapper (list schemes, build, showBuildSettings)
 ├── ProjectConfig/    # .noxcode.json read/write
 ├── NoXcodeKit/       # High-level orchestration API

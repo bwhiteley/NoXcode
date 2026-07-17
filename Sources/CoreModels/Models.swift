@@ -74,6 +74,53 @@ public struct SimulatorSelection: Codable, Hashable, Sendable {
     }
 }
 
+public struct PhysicalDevice: Codable, Hashable, Sendable, Identifiable {
+    public let identifier: String
+    public let udid: String?
+    public let name: String
+    public let state: String
+    public let platform: Platform
+    public let osVersion: String?
+    public let isAvailable: Bool
+
+    public var id: String { identifier }
+
+    public init(
+        identifier: String,
+        udid: String?,
+        name: String,
+        state: String,
+        platform: Platform,
+        osVersion: String?,
+        isAvailable: Bool
+    ) {
+        self.identifier = identifier
+        self.udid = udid
+        self.name = name
+        self.state = state
+        self.platform = platform
+        self.osVersion = osVersion
+        self.isAvailable = isAvailable
+    }
+
+    public var osDisplayName: String {
+        if let osVersion, !osVersion.isEmpty {
+            return "\(platform.rawValue) \(osVersion)"
+        }
+        return platform.rawValue
+    }
+}
+
+public struct PhysicalDeviceSelection: Codable, Hashable, Sendable {
+    public let identifier: String
+    public let platform: Platform
+
+    public init(identifier: String, platform: Platform) {
+        self.identifier = identifier
+        self.platform = platform
+    }
+}
+
 public struct XcodeProjectInfo: Codable, Sendable {
     public let schemes: [String]
     public let configurations: [String]
@@ -91,6 +138,7 @@ public struct NoXcodeConfig: Codable, Sendable {
     public let bundleId: String?
     public let storeKitConfigurationFile: String?
     public let simulators: [SimulatorSelection]
+    public let physicalDevices: [PhysicalDeviceSelection]
     public let derivedDataPath: String?
     public let launchArguments: [String]
     public let environmentVariableLines: [String]
@@ -106,6 +154,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         bundleId: String? = nil,
         storeKitConfigurationFile: String? = nil,
         simulators: [SimulatorSelection],
+        physicalDevices: [PhysicalDeviceSelection] = [],
         derivedDataPath: String? = ".noxcode/DerivedData",
         launchArguments: [String] = [],
         environmentVariableLines: [String] = []
@@ -116,6 +165,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         self.bundleId = bundleId
         self.storeKitConfigurationFile = storeKitConfigurationFile
         self.simulators = simulators
+        self.physicalDevices = physicalDevices
         self.derivedDataPath = derivedDataPath
         self.launchArguments = launchArguments
         self.environmentVariableLines = environmentVariableLines
@@ -128,6 +178,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         bundleId: String? = nil,
         storeKitConfigurationFile: String? = nil,
         simulators: [SimulatorSelection],
+        physicalDevices: [PhysicalDeviceSelection] = [],
         derivedDataPath: String? = ".noxcode/DerivedData",
         launchArguments: [String] = [],
         environmentVariables: [String: String]
@@ -139,6 +190,7 @@ public struct NoXcodeConfig: Codable, Sendable {
             bundleId: bundleId,
             storeKitConfigurationFile: storeKitConfigurationFile,
             simulators: simulators,
+            physicalDevices: physicalDevices,
             derivedDataPath: derivedDataPath,
             launchArguments: launchArguments,
             environmentVariableLines: Self.lines(from: environmentVariables)
@@ -152,6 +204,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         case bundleId
         case storeKitConfigurationFile
         case simulators
+        case physicalDevices
         case derivedDataPath
         case launchArguments
         case environmentVariableLines
@@ -166,6 +219,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         bundleId = try container.decodeIfPresent(String.self, forKey: .bundleId)
         storeKitConfigurationFile = try container.decodeIfPresent(String.self, forKey: .storeKitConfigurationFile)
         simulators = try container.decode([SimulatorSelection].self, forKey: .simulators)
+        physicalDevices = try container.decodeIfPresent([PhysicalDeviceSelection].self, forKey: .physicalDevices) ?? []
         derivedDataPath = try container.decodeIfPresent(String.self, forKey: .derivedDataPath)
         launchArguments = try container.decodeIfPresent([String].self, forKey: .launchArguments) ?? []
         environmentVariableLines = try Self.decodeEnvironmentVariableLines(from: container)
@@ -179,6 +233,7 @@ public struct NoXcodeConfig: Codable, Sendable {
         try container.encodeIfPresent(bundleId, forKey: .bundleId)
         try container.encodeIfPresent(storeKitConfigurationFile, forKey: .storeKitConfigurationFile)
         try container.encode(simulators, forKey: .simulators)
+        try container.encode(physicalDevices, forKey: .physicalDevices)
         try container.encodeIfPresent(derivedDataPath, forKey: .derivedDataPath)
         try container.encode(launchArguments, forKey: .launchArguments)
         try container.encode(environmentVariableLines, forKey: .environmentVariableLines)

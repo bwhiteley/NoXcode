@@ -74,6 +74,7 @@ public final class ConfigStore: Sendable {
             bundleId: config.bundleId,
             storeKitConfigurationFile: config.storeKitConfigurationFile,
             simulators: config.simulators,
+            physicalDevices: config.physicalDevices,
             derivedDataPath: config.derivedDataPath,
             launchArguments: config.launchArguments,
             environmentVariableLines: config.environmentVariableLines
