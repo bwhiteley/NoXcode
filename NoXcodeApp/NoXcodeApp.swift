@@ -213,29 +213,34 @@ struct ContentView: View {
                 }
 
                 lcarsPanel(title: "Launch Context", accent: LCARSTheme.accentPurple) {
-                    HStack(spacing: 10) {
+                    HStack(alignment: .bottom, spacing: 10) {
                         labeledValue(title: "Bundle ID", value: bundleId.isEmpty ? "Unavailable" : bundleId)
-                        Menu {
-                            Button("None") {
-                                selectedStoreKitConfigurationFile = ""
-                            }
-                            ForEach(storeKitFiles, id: \.self) { file in
-                                Button(file) {
-                                    selectedStoreKitConfigurationFile = file
+                        VStack(alignment: .leading, spacing: 3) {
+                            capsuleLabel("StoreKit Config")
+                            Menu {
+                                Button("None") {
+                                    selectedStoreKitConfigurationFile = ""
                                 }
+                                ForEach(storeKitFiles, id: \.self) { file in
+                                    Button(file) {
+                                        selectedStoreKitConfigurationFile = file
+                                    }
+                                }
+                            } label: {
+                                let selectedValue = selectedStoreKitConfigurationFile.isEmpty ? "None" : selectedStoreKitConfigurationFile
+                                lcarsMenuLabel(selectedValue, isPlaceholder: selectedStoreKitConfigurationFile.isEmpty)
                             }
-                        } label: {
-                            let selectedValue = selectedStoreKitConfigurationFile.isEmpty ? "None" : selectedStoreKitConfigurationFile
-                            lcarsMenuLabel(selectedValue, isPlaceholder: selectedStoreKitConfigurationFile.isEmpty)
+                            .lcarsMenuTrigger()
+                            .lcarsControl()
                         }
-                        .lcarsMenuTrigger()
-                        .frame(minWidth: 240)
-                        .lcarsControl()
-                        Text("Derived Data")
-                            .font(.caption)
-                            .foregroundStyle(LCARSTheme.textSecondary)
-                        TextField("Path", text: $derivedDataPath)
-                            .lcarsField()
+                        .frame(minWidth: 240, maxWidth: 280, alignment: .leading)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            capsuleLabel("Derived Data")
+                            TextField("Path", text: $derivedDataPath)
+                                .lcarsField()
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
                     HStack(alignment: .top, spacing: 12) {
@@ -412,9 +417,7 @@ struct ContentView: View {
 
     private func labeledValue(title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title.uppercased())
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(LCARSTheme.textSecondary)
+            capsuleLabel(title)
             Text(value)
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundStyle(LCARSTheme.textPrimary)
@@ -435,6 +438,13 @@ struct ContentView: View {
                 .help(value)
         }
         .frame(maxWidth: 280, alignment: .leading)
+    }
+
+    private func capsuleLabel(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(LCARSTheme.textSecondary)
+            .lineLimit(1)
     }
 
     private func lcarsMenuLabel(_ title: String, isPlaceholder: Bool = false) -> some View {
