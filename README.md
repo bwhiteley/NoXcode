@@ -37,7 +37,7 @@ noxcode init --project MyApp.xcodeproj --scheme MyApp --config Debug --storekit 
 # Run build + install + launch using .noxcode.json
 noxcode run
 
-# Skip build + install and just relaunch with configured args/env vars
+# Skip build; reinstall + relaunch the existing build product
 noxcode run --rerun
 
 # Dry-run (show what would happen without executing)
@@ -80,6 +80,9 @@ The `.noxcode.json` file is stored at the project root:
 Environment variables are passed with the `SIMCTL_CHILD_` prefix on simulators and through `--environment-variables` for physical devices.
 Lines in `environmentVariableLines` that start with `#` or `//` are preserved in `.noxcode.json` but ignored when launching.
 When `storeKitConfigurationFile` is set, NoXcode copies that file into each selected simulator as `Configuration.storekit` before launching the app.
+`derivedDataPath` is the base directory; NoXcode appends per-target subfolders such as `ios-simulator` and `ios-physical`.
+`derivedDataPath` supports `~` and expands it to your home directory before building.
+NoXcode also places a lock file at `derivedDataPath/.noxcode.run.lock` while a run is active to prevent concurrent runs that share the same derived data directory.
 
 ## Architecture
 

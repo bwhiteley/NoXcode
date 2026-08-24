@@ -61,7 +61,7 @@ public final class ConfigStore: Sendable {
         )
         let persistedConfig = configByUpdatingProject(config, project: relativeProjectPath)
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(persistedConfig)
         try data.write(to: url)
     }
@@ -71,7 +71,6 @@ public final class ConfigStore: Sendable {
             project: project,
             scheme: config.scheme,
             configuration: config.configuration,
-            bundleId: config.bundleId,
             storeKitConfigurationFile: config.storeKitConfigurationFile,
             simulators: config.simulators,
             physicalDevices: config.physicalDevices,

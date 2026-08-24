@@ -51,7 +51,7 @@ public final class DevicectlClient: Sendable {
         }
         if !environmentVariables.isEmpty {
             let environmentData = try JSONSerialization.data(withJSONObject: environmentVariables.sorted(by: { $0.key < $1.key })
-                .reduce(into: [String: String]()) { $0[$1.key] = $1.value })
+                .reduce(into: [String: String]()) { $0[$1.key] = $1.value }, options: [.withoutEscapingSlashes])
             guard let environmentJSONString = String(data: environmentData, encoding: .utf8) else {
                 throw NSError(
                     domain: "DevicectlClient",

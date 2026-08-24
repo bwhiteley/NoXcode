@@ -74,6 +74,10 @@ public final class XcodeBuildClient: Sendable {
             streamOutput: streamOutput
         )
 
+        return try await resolveAppPath(request)
+    }
+
+    public func resolveAppPath(_ request: BuildRequest) async throws -> BuildResult {
         let settings = try await showBuildSettings(request)
         let appPath = (settings.targetBuildDir as NSString).appendingPathComponent(settings.wrapperName)
         return BuildResult(sdk: request.sdk, appPath: appPath)
@@ -82,6 +86,7 @@ public final class XcodeBuildClient: Sendable {
     public func showBuildSettings(_ request: BuildRequest) async throws -> BuildSettings {
         var command = [
             "-showBuildSettings",
+            "-json",
             "-skipMacroValidation",
             "-skipPackagePluginValidation",
             "-project", request.projectPath,
@@ -96,7 +101,7 @@ public final class XcodeBuildClient: Sendable {
             "/usr/bin/xcodebuild",
             command
         )
-        return try parseBuildSettings(result.stdout)
+        return try parseBuildSettings(result.stdout, scheme: request.scheme)
     }
 
     public func bundleIdentifier(
@@ -108,6 +113,7 @@ public final class XcodeBuildClient: Sendable {
             "/usr/bin/xcodebuild",
             [
                 "-showBuildSettings",
+                "-json",
                 "-skipMacroValidation",
                 "-skipPackagePluginValidation",
                 "-project", projectPath,
@@ -115,12 +121,26 @@ public final class XcodeBuildClient: Sendable {
                 "-configuration", configuration
             ]
         )
-        let settings = parseBuildSettingsDictionary(result.stdout)
-        return settings["PRODUCT_BUNDLE_IDENTIFIER"]
+        let entries = parseBuildSettingsEntries(from: result.stdout)
+        if let preferred = preferredBuildSettingsEntry(scheme: scheme, entries: entries),
+           let id = bundleIdentifier(from: preferred.settings) {
+            return id
+        }
+        return parseBuildSettingsDictionary(result.stdout)["PRODUCT_BUNDLE_IDENTIFIER"]
     }
 
-    private func parseBuildSettings(_ output: String) throws -> BuildSettings {
-        let settings = parseBuildSettingsDictionary(output)
+    public func launchConfiguration(projectPath: String, scheme: String) throws -> String? {
+        guard let schemeURL = try resolveSchemeFileURL(projectPath: projectPath, scheme: scheme) else {
+            return nil
+        }
+        let contents = try String(contentsOf: schemeURL)
+        return parseLaunchConfiguration(fromSchemeXML: contents)
+    }
+
+    private func parseBuildSettings(_ output: String, scheme: String) throws -> BuildSettings {
+        let entries = parseBuildSettingsEntries(from: output)
+        let settings = preferredBuildSettingsEntry(scheme: scheme, entries: entries)?.settings
+            ?? parseBuildSettingsDictionary(output)
         guard let targetBuildDir = settings["TARGET_BUILD_DIR"],
               let wrapperName = settings["WRAPPER_NAME"] else {
             throw XcodeBuildError.missingBuildSetting
@@ -137,6 +157,104 @@ public final class XcodeBuildClient: Sendable {
             }
         }
         return settings
+    }
+
+    private func parseBuildSettingsEntries(from output: String) -> [(target: String, settings: [String: String])] {
+        // xcodebuild can print log lines before JSON; parse from the first '[' when present.
+        guard let start = output.firstIndex(of: "[") else { return [] }
+        let data = Data(output[start...].utf8)
+        guard let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return raw.map { item in
+            let target = item["target"] as? String ?? ""
+            let rawSettings = item["buildSettings"] as? [String: Any] ?? [:]
+            var settings: [String: String] = [:]
+            for (key, value) in rawSettings {
+                if let string = value as? String {
+                    settings[key] = string
+                }
+            }
+            return (target, settings)
+        }
+    }
+
+    private func preferredBuildSettingsEntry(
+        scheme: String,
+        entries: [(target: String, settings: [String: String])]
+    ) -> (target: String, settings: [String: String])? {
+        if let appTarget = entries.first(where: { $0.target == scheme && isApp($0.settings) }) {
+            return appTarget
+        }
+        if let appTarget = entries.first(where: { isApp($0.settings) }) {
+            return appTarget
+        }
+        if let nonTestTarget = entries.first(where: { !isTest($0.target, $0.settings) }) {
+            return nonTestTarget
+        }
+        return entries.first
+    }
+
+    private func bundleIdentifier(from settings: [String: String]) -> String? {
+        let value = settings["PRODUCT_BUNDLE_IDENTIFIER"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !value.isEmpty else { return nil }
+        return value
+    }
+
+    private func resolveSchemeFileURL(projectPath: String, scheme: String) throws -> URL? {
+        let fileManager = FileManager.default
+        let projectURL = URL(fileURLWithPath: projectPath)
+        let sharedURL = projectURL
+            .appendingPathComponent("xcshareddata")
+            .appendingPathComponent("xcschemes")
+            .appendingPathComponent("\(scheme).xcscheme")
+        if fileManager.fileExists(atPath: sharedURL.path) {
+            return sharedURL
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: projectURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        for case let url as URL in enumerator {
+            guard url.pathExtension == "xcscheme" else { continue }
+            let name = url.deletingPathExtension().lastPathComponent
+            if name == scheme {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private func parseLaunchConfiguration(fromSchemeXML xml: String) -> String? {
+        guard let launchActionRange = xml.range(of: "<LaunchAction"),
+              let tagEnd = xml[launchActionRange.lowerBound...].firstIndex(of: ">") else {
+            return nil
+        }
+        let launchActionTag = String(xml[launchActionRange.lowerBound...tagEnd])
+        let pattern = #"buildConfiguration\s*=\s*"([^"]+)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsRange = NSRange(launchActionTag.startIndex..<launchActionTag.endIndex, in: launchActionTag)
+        guard let match = regex.firstMatch(in: launchActionTag, range: nsRange),
+              match.numberOfRanges > 1,
+              let capture = Range(match.range(at: 1), in: launchActionTag) else {
+            return nil
+        }
+        return String(launchActionTag[capture])
+    }
+
+    private func isTest(_ target: String, _ settings: [String: String]) -> Bool {
+        settings["WRAPPER_EXTENSION"] == "xctest"
+            || target.hasSuffix("Tests")
+            || target.hasSuffix("UITests")
+    }
+
+    private func isApp(_ settings: [String: String]) -> Bool {
+        settings["WRAPPER_EXTENSION"] == "app"
     }
 }
 

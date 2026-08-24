@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import CoreModels
 import ProcessRunner
 import Simctl
@@ -74,6 +75,10 @@ public final class NoXcodeKit: Sendable {
         )
     }
 
+    public func fetchLaunchConfiguration(projectPath: String, scheme: String) throws -> String? {
+        try xcodebuild.launchConfiguration(projectPath: projectPath, scheme: scheme)
+    }
+
     public func readConfig(projectPath: String) throws -> NoXcodeConfig {
         try configStore.readConfig(projectPath: projectPath)
     }
@@ -127,23 +132,24 @@ public final class NoXcodeKit: Sendable {
         }
 
         var buildResults: [BuildBucketKey: BuildResult] = [:]
-        let bundleId: String
+        let projectPath = config.project
+        let derivedDataBaseURL = resolvedDerivedDataBaseURL(
+            path: config.derivedDataPath ?? ".noxcode/DerivedData",
+            workingDirectory: workingDirectory
+        )
+        let runLock = dryRun ? nil : try acquireRunLock(in: derivedDataBaseURL)
+        defer { runLock?.release() }
+        let buckets = buildBuckets(
+            forSimulators: config.simulators,
+            physicalDevices: config.physicalDevices
+        )
+        if buckets.isEmpty {
+            logger.log(.init("No supported platforms found in config."))
+            return
+        }
 
-        if rerun {
-            bundleId = try await resolveBundleIdForRerun(config: config, logger: logger, dryRun: dryRun)
-        } else {
-            let projectPath = config.project
-            let derivedDataBase = config.derivedDataPath ?? ".noxcode/DerivedData"
-            let buckets = buildBuckets(
-                forSimulators: config.simulators,
-                physicalDevices: config.physicalDevices
-            )
-            if buckets.isEmpty {
-                logger.log(.init("No supported platforms found in config."))
-                return
-            }
-
-            if dryRun {
+        if dryRun {
+            if !rerun {
                 for bucket in buckets {
                     let targetName = bucket.key.target == .simulator ? "simulators" : "physical devices"
                     logger.log(
@@ -152,50 +158,76 @@ public final class NoXcodeKit: Sendable {
                         )
                     )
                 }
-            } else {
-                try await withThrowingTaskGroup(of: (BuildBucketKey, BuildResult).self) { group in
-                    for bucket in buckets {
-                        group.addTask {
-                            let targetSuffix = bucket.key.target == .simulator ? "simulator" : "physical"
-                            let derivedData = "\(derivedDataBase)-\(bucket.key.platform.rawValue.lowercased())-\(targetSuffix)"
-                            let request = BuildRequest(
-                                projectPath: projectPath,
-                                scheme: config.scheme,
-                                configuration: config.configuration,
-                                sdk: bucket.sdk,
-                                destination: bucket.destination,
-                                derivedDataPath: derivedData,
-                                buildSettingOverrides: self.buildSettingOverrides(for: bucket)
-                            )
-                            let result = try await self.xcodebuild.build(request) { line, isStderr in
-                                let prefix = isStderr ? "stderr" : "stdout"
-                                let destinationName = bucket.key.target == .simulator ? "simulator" : "device"
-                                logger.log(
-                                    .init(
-                                        "[\(bucket.key.platform.rawValue) \(destinationName)] \(prefix): \(line.trimmingCharacters(in: .newlines))"
-                                    )
-                                )
-                            }
-                            return (bucket.key, result)
-                        }
-                    }
-                    for try await (key, result) in group {
-                        buildResults[key] = result
-                    }
-                }
             }
-            bundleId = try resolveBundleId(config: config, buildResults: buildResults, logger: logger, dryRun: dryRun)
-        }
-
-        if dryRun {
+            let bundleId = try await resolveBundleIdForDryRun(
+                config: config,
+                rerun: rerun,
+                logger: logger
+            )
             let targetsSummary = "\(config.simulators.count) simulators and \(config.physicalDevices.count) physical devices"
             if rerun {
-                logger.log(.init("Would relaunch \(bundleId) on \(targetsSummary) (skip build + install)."))
+                logger.log(.init("Would install + launch \(bundleId) on \(targetsSummary) (skip build)."))
             } else {
                 logger.log(.init("Would install + launch \(bundleId) on \(targetsSummary)."))
             }
             return
         }
+
+        try await withThrowingTaskGroup(of: (BuildBucketKey, BuildResult).self) { group in
+            for bucket in buckets {
+                group.addTask {
+                    let targetSuffix = bucket.key.target == .simulator ? "simulator" : "physical"
+                    let derivedDataFolder = "\(bucket.key.platform.rawValue.lowercased())-\(targetSuffix)"
+                    let derivedData = derivedDataBaseURL
+                        .appendingPathComponent(derivedDataFolder, isDirectory: true)
+                        .path
+                    let request = BuildRequest(
+                        projectPath: projectPath,
+                        scheme: config.scheme,
+                        configuration: config.configuration,
+                        sdk: bucket.sdk,
+                        destination: bucket.destination,
+                        derivedDataPath: derivedData,
+                        buildSettingOverrides: self.buildSettingOverrides(for: bucket)
+                    )
+                    let destinationName = bucket.key.target == .simulator ? "simulator" : "device"
+                    let result: BuildResult
+                    if rerun {
+                        result = try await self.xcodebuild.resolveAppPath(request)
+                        guard FileManager.default.fileExists(atPath: result.appPath) else {
+                            throw NSError(
+                                domain: "NoXcodeKit",
+                                code: 6,
+                                userInfo: [
+                                    NSLocalizedDescriptionKey:
+                                        "No existing build product for \(bucket.key.platform.rawValue) \(destinationName) at \(result.appPath). Run without --rerun first."
+                                ]
+                            )
+                        }
+                        logger.log(
+                            .init(
+                                "[\(bucket.key.platform.rawValue) \(destinationName)] Reusing existing build at \(result.appPath)"
+                            )
+                        )
+                    } else {
+                        result = try await self.xcodebuild.build(request) { line, isStderr in
+                            let prefix = isStderr ? "stderr" : "stdout"
+                            logger.log(
+                                .init(
+                                    "[\(bucket.key.platform.rawValue) \(destinationName)] \(prefix): \(line.trimmingCharacters(in: .newlines))"
+                                )
+                            )
+                        }
+                    }
+                    return (bucket.key, result)
+                }
+            }
+            for try await (key, result) in group {
+                buildResults[key] = result
+            }
+        }
+
+        let bundleId = try resolveBundleId(buildResults: buildResults, logger: logger)
 
         let simulatorDevicesByUDID = config.simulators.isEmpty
             ? [:]
@@ -219,16 +251,13 @@ public final class NoXcodeKit: Sendable {
                     await semaphore.acquire()
                     defer { Task { await semaphore.release() } }
                     try await self.simctl.boot(sim.udid)
-                    if !rerun {
-                        let key = BuildBucketKey(platform: sim.platform, target: .simulator)
-                        guard let build = buildResults[key] else {
-                            logger.log(.init("No build output for \(sim.platform.rawValue); skipping \(sim.udid)."))
-                            return
-                        }
-                        try await self.simctl.install(sim.udid, appPath: build.appPath)
+                    let key = BuildBucketKey(platform: sim.platform, target: .simulator)
+                    guard let build = buildResults[key] else {
+                        logger.log(.init("No build output for \(sim.platform.rawValue); skipping \(sim.udid)."))
+                        return
                     }
-                    if !rerun,
-                       let storeKitConfigurationFile = config.storeKitConfigurationFile,
+                    try await self.simctl.install(sim.udid, appPath: build.appPath)
+                    if let storeKitConfigurationFile = config.storeKitConfigurationFile,
                        !storeKitConfigurationFile.isEmpty {
                         try self.copyStoreKitConfigurationFile(
                             storeKitConfigurationFile,
@@ -244,13 +273,12 @@ public final class NoXcodeKit: Sendable {
                         bundleId: bundleId,
                         arguments: config.launchArguments,
                         environmentVariables: config.environmentVariables,
-                        terminateRunningProcess: rerun
+                        terminateRunningProcess: true
                     )
-                    let launchVerb = rerun ? "Relaunched" : "Launched"
                     let device = simulatorDevicesByUDID[sim.udid]
                     let deviceType = device?.name ?? "Unknown Device"
                     let osVersion = device?.osVersion ?? "Unknown OS"
-                    logger.log(.init("\(launchVerb) \(bundleId) on \(sim.udid) (\(deviceType), OS \(osVersion))."))
+                    logger.log(.init("Launched \(bundleId) on \(sim.udid) (\(deviceType), OS \(osVersion))."))
                 }
             }
 
@@ -258,33 +286,30 @@ public final class NoXcodeKit: Sendable {
                 group.addTask {
                     await semaphore.acquire()
                     defer { Task { await semaphore.release() } }
-                    if !rerun {
-                        let key = BuildBucketKey(platform: physicalDevice.platform, target: .physicalDevice)
-                        guard let build = buildResults[key] else {
-                            logger.log(
-                                .init(
-                                    "No build output for \(physicalDevice.platform.rawValue); skipping \(physicalDevice.identifier)."
-                                )
+                    let key = BuildBucketKey(platform: physicalDevice.platform, target: .physicalDevice)
+                    guard let build = buildResults[key] else {
+                        logger.log(
+                            .init(
+                                "No build output for \(physicalDevice.platform.rawValue); skipping \(physicalDevice.identifier)."
                             )
-                            return
-                        }
-                        try await self.devicectl.install(physicalDevice.identifier, appPath: build.appPath)
+                        )
+                        return
                     }
+                    try await self.devicectl.install(physicalDevice.identifier, appPath: build.appPath)
                     try await self.devicectl.launch(
                         physicalDevice.identifier,
                         bundleId: bundleId,
                         arguments: config.launchArguments,
                         environmentVariables: config.environmentVariables,
-                        terminateRunningProcess: rerun
+                        terminateRunningProcess: true
                     )
-                    let launchVerb = rerun ? "Relaunched" : "Launched"
                     let resolvedDevice = physicalDevicesByIdentifier[physicalDevice.identifier]
                         ?? physicalDevicesByUDID[physicalDevice.identifier]
                     let deviceName = resolvedDevice?.name ?? "Unknown Device"
                     let osVersion = resolvedDevice?.osVersion ?? "Unknown OS"
                     logger.log(
                         .init(
-                            "\(launchVerb) \(bundleId) on \(physicalDevice.identifier) (\(deviceName), OS \(osVersion))."
+                            "Launched \(bundleId) on \(physicalDevice.identifier) (\(deviceName), OS \(osVersion))."
                         )
                     )
                 }
@@ -389,16 +414,10 @@ public final class NoXcodeKit: Sendable {
     }
 
     private func resolveBundleId(
-        config: NoXcodeConfig,
         buildResults: [BuildBucketKey: BuildResult],
-        logger: RunLogger,
-        dryRun: Bool
+        logger: RunLogger
     ) throws -> String {
-        if let bundleId = config.bundleId {
-            return bundleId
-        }
         guard let firstBuild = buildResults.first?.value else {
-            if dryRun { return "com.example.app" }
             throw NSError(domain: "NoXcodeKit", code: 1, userInfo: [NSLocalizedDescriptionKey: "No build results to infer bundleId."])
         }
         let infoPlist = URL(fileURLWithPath: firstBuild.appPath).appendingPathComponent("Info.plist")
@@ -411,15 +430,12 @@ public final class NoXcodeKit: Sendable {
         throw NSError(domain: "NoXcodeKit", code: 2, userInfo: [NSLocalizedDescriptionKey: "CFBundleIdentifier not found in Info.plist."])
     }
 
-    private func resolveBundleIdForRerun(
+    private func resolveBundleIdForDryRun(
         config: NoXcodeConfig,
-        logger: RunLogger,
-        dryRun: Bool
+        rerun: Bool,
+        logger: RunLogger
     ) async throws -> String {
-        if let bundleId = config.bundleId {
-            return bundleId
-        }
-        if dryRun {
+        if !rerun {
             return "com.example.app"
         }
         if let bundleId = try await xcodebuild.bundleIdentifier(
@@ -430,14 +446,7 @@ public final class NoXcodeKit: Sendable {
             logger.log(.init("Inferred bundleId: \(bundleId)"))
             return bundleId
         }
-        throw NSError(
-            domain: "NoXcodeKit",
-            code: 5,
-            userInfo: [
-                NSLocalizedDescriptionKey:
-                    "Unable to resolve bundleId for rerun. Set bundleId in .noxcode.json or ensure xcodebuild can read PRODUCT_BUNDLE_IDENTIFIER."
-            ]
-        )
+        return "com.example.app"
     }
 
     private func copyStoreKitConfigurationFile(
@@ -488,6 +497,25 @@ public final class NoXcodeKit: Sendable {
         return workingDirectory.appendingPathComponent(config.project)
     }
 
+    private func resolvedDerivedDataBaseURL(path: String, workingDirectory: URL) -> URL {
+        let expandedPath = (path as NSString).expandingTildeInPath
+        let baseURL: URL
+        if expandedPath.hasPrefix("/") {
+            baseURL = URL(fileURLWithPath: expandedPath)
+        } else {
+            baseURL = workingDirectory.appendingPathComponent(expandedPath)
+        }
+        return baseURL.standardizedFileURL
+    }
+
+    private func acquireRunLock(in derivedDataBaseURL: URL) throws -> DerivedDataRunLock {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: derivedDataBaseURL, withIntermediateDirectories: true)
+        let lockURL = derivedDataBaseURL.appendingPathComponent(".noxcode.run.lock", isDirectory: false)
+
+        return try DerivedDataRunLock.acquire(lockURL: lockURL, ownerPID: getpid(), lockScope: derivedDataBaseURL.path)
+    }
+
     private func resolveSystemContainer(in systemRoot: URL) throws -> URL {
         let fileManager = FileManager.default
         let children = try fileManager.contentsOfDirectory(
@@ -513,6 +541,138 @@ public final class NoXcodeKit: Sendable {
             code: 4,
             userInfo: [NSLocalizedDescriptionKey: "Unable to locate simulator system container at \(systemRoot.path)"]
         )
+    }
+}
+
+private final class DerivedDataRunLock: @unchecked Sendable {
+    private var fileDescriptor: Int32
+    private let lockPath: String
+    private var released = false
+
+    private init(fileDescriptor: Int32, lockPath: String) {
+        self.fileDescriptor = fileDescriptor
+        self.lockPath = lockPath
+    }
+
+    deinit {
+        release()
+    }
+
+    static func acquire(lockURL: URL, ownerPID: Int32, lockScope: String) throws -> DerivedDataRunLock {
+        let lockPath = lockURL.path
+        let descriptor = open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH))
+        guard descriptor >= 0 else {
+            throw NSError(
+                domain: "NoXcodeKit",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to open run lock at \(lockPath): \(String(cString: strerror(errno)))"]
+            )
+        }
+
+        var fileLock = flock(
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            l_type: Int16(F_WRLCK),
+            l_whence: Int16(SEEK_SET)
+        )
+        if fcntl(descriptor, F_SETLK, &fileLock) == -1 {
+            let lockError = errno
+            let owningPID = readPID(from: descriptor)
+            _ = close(descriptor)
+            if lockError == EACCES || lockError == EAGAIN {
+                let ownerDescription = owningPID.map { " (pid \($0))" } ?? ""
+                throw NSError(
+                    domain: "NoXcodeKit",
+                    code: 8,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Another noxcode run is already active for derivedDataPath \(lockScope)\(ownerDescription)."
+                    ]
+                )
+            }
+            throw NSError(
+                domain: "NoXcodeKit",
+                code: 9,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to lock run lock at \(lockPath): \(String(cString: strerror(lockError)))"]
+            )
+        }
+
+        do {
+            try writePID(ownerPID, to: descriptor, at: lockPath)
+        } catch {
+            lockPath.withCString { cPath in
+                _ = unlink(cPath)
+            }
+            _ = close(descriptor)
+            throw error
+        }
+        return DerivedDataRunLock(fileDescriptor: descriptor, lockPath: lockPath)
+    }
+
+    func release() {
+        guard !released else { return }
+        released = true
+
+        lockPath.withCString { cPath in
+            _ = unlink(cPath)
+        }
+        if fileDescriptor >= 0 {
+            _ = close(fileDescriptor)
+            fileDescriptor = -1
+        }
+    }
+
+    private static func writePID(_ pid: Int32, to descriptor: Int32, at lockPath: String) throws {
+        let pidLine = "\(pid)\n"
+        guard let data = pidLine.data(using: .utf8) else {
+            throw NSError(
+                domain: "NoXcodeKit",
+                code: 10,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to encode PID for run lock at \(lockPath)."]
+            )
+        }
+        guard ftruncate(descriptor, 0) == 0 else {
+            throw NSError(
+                domain: "NoXcodeKit",
+                code: 11,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to truncate run lock at \(lockPath): \(String(cString: strerror(errno)))"]
+            )
+        }
+        guard lseek(descriptor, 0, SEEK_SET) != -1 else {
+            throw NSError(
+                domain: "NoXcodeKit",
+                code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to seek run lock at \(lockPath): \(String(cString: strerror(errno)))"]
+            )
+        }
+
+        var totalWritten = 0
+        while totalWritten < data.count {
+            let bytesWritten = data.withUnsafeBytes { rawBuffer -> Int in
+                guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+                let pointer = baseAddress.advanced(by: totalWritten)
+                return write(descriptor, pointer, data.count - totalWritten)
+            }
+            if bytesWritten <= 0 {
+                throw NSError(
+                    domain: "NoXcodeKit",
+                    code: 13,
+                    userInfo: [NSLocalizedDescriptionKey: "Unable to write PID to run lock at \(lockPath): \(String(cString: strerror(errno)))"]
+                )
+            }
+            totalWritten += bytesWritten
+        }
+        _ = fsync(descriptor)
+    }
+
+    private static func readPID(from descriptor: Int32) -> Int32? {
+        guard lseek(descriptor, 0, SEEK_SET) != -1 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: 64)
+        let count = read(descriptor, &buffer, buffer.count)
+        guard count > 0 else { return nil }
+        let pidString = String(decoding: buffer[0..<count], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int32(pidString)
     }
 }
 

@@ -1,20 +1,136 @@
 import SwiftUI
+import AppKit
 import NoXcodeKit
 import CoreModels
 import ProjectConfig
 import UniformTypeIdentifiers
 
-@main
-struct NoXcodeApp: App {
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
+@MainActor
+@Observable
+final class AppModel {
+    static let shared = AppModel()
+
+    var projectPath: String = ""
+    var openMessage: String?
+    /// Bumped on every successful open so analysis re-runs even if the path is unchanged.
+    private(set) var projectLoadToken: UInt = 0
+
+    func openProject(at url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let resolved = url.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory) else {
+            openMessage = "Path does not exist: \(resolved.path)"
+            return
+        }
+
+        guard let projectURL = resolveXcodeProject(from: resolved, isDirectory: isDirectory.boolValue) else {
+            return
+        }
+
+        projectPath = projectURL.path
+        NSDocumentController.shared.noteNewRecentDocumentURL(projectURL)
+        projectLoadToken &+= 1
+        openMessage = nil
+    }
+
+    /// Accepts an `.xcodeproj` package, or a folder that contains exactly one.
+    private func resolveXcodeProject(from url: URL, isDirectory: Bool) -> URL? {
+        if url.pathExtension == "xcodeproj" {
+            return url
+        }
+
+        guard isDirectory else {
+            openMessage = "Not an .xcodeproj: \(url.lastPathComponent)"
+            return nil
+        }
+
+        do {
+            let relativePath = try ConfigStore().resolveProjectPath(in: url, explicitPath: nil)
+            return url.appendingPathComponent(relativePath)
+        } catch ConfigStoreError.projectNotFound {
+            openMessage = "No .xcodeproj found in \(url.path)"
+            return nil
+        } catch ConfigStoreError.multipleProjects(let projects) {
+            openMessage = "Multiple .xcodeproj found in \(url.lastPathComponent): \(projects.joined(separator: ", "))"
+            return nil
+        } catch {
+            openMessage = "Unable to look for .xcodeproj in \(url.path): \(error.localizedDescription)"
+            return nil
         }
     }
 }
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        Task { @MainActor in
+            let projectURL = urls.first(where: { $0.pathExtension == "xcodeproj" }) ?? urls.first
+            guard let projectURL else { return }
+            AppModel.shared.openProject(at: projectURL)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        Task { @MainActor in
+            AppModel.shared.openProject(at: URL(fileURLWithPath: filename))
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        Task { @MainActor in
+            if let first = filenames.first {
+                AppModel.shared.openProject(at: URL(fileURLWithPath: first))
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            sender.reply(toOpenOrPrint: .success)
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let args = Array(CommandLine.arguments.dropFirst())
+        let projectArg = args.first(where: { ($0 as NSString).pathExtension == "xcodeproj" })
+            ?? args.first(where: Self.isExistingDirectory)
+        guard let path = projectArg else { return }
+        Task { @MainActor in
+            AppModel.shared.openProject(at: URL(fileURLWithPath: path))
+        }
+    }
+
+    private static func isExistingDirectory(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+}
+
+@main
+struct NoXcodeApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    private var model = AppModel.shared
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView(model: model)
+                // Route file-open events to AppDelegate instead of spawning windows.
+                .handlesExternalEvents(preferring: [], allowing: [])
+                .onOpenURL { url in
+                    model.openProject(at: url)
+                }
+        }
+        .handlesExternalEvents(matching: [])
+    }
+}
+
 struct ContentView: View {
-    @State private var projectPath: String = ""
+    @Bindable var model: AppModel
     @State private var scheme: String = ""
     @State private var configuration: String = "Debug"
     @State private var schemes: [String] = []
@@ -35,19 +151,27 @@ struct ContentView: View {
     @State private var configLoadStatus: String = ""
     @State private var isLoadingProjectInfo = false
 
+    private var projectPath: String {
+        get { model.projectPath }
+        nonmutating set { model.projectPath = newValue }
+    }
+
     private let kit = NoXcodeKit()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
-                TextField("Project (.xcodeproj)", text: $projectPath)
+                TextField("Project (.xcodeproj)", text: $model.projectPath)
                 Button("Browse…") { showProjectPicker = true }
-                Picker("Scheme", selection: $scheme) {
+                Text("Scheme")
+                    .foregroundStyle(.secondary)
+                Menu(scheme.isEmpty ? "Select" : scheme) {
                     ForEach(schemes, id: \.self) { value in
-                        Text(value).tag(value)
+                        Button(value) {
+                            scheme = value
+                        }
                     }
                 }
-                .pickerStyle(.menu)
                 .frame(minWidth: 140)
                 .disabled(schemes.isEmpty)
 
@@ -64,7 +188,13 @@ struct ContentView: View {
                 ProgressView("Scanning project…")
             }
             HStack(spacing: 12) {
-                TextField("Bundle ID (optional)", text: $bundleId)
+                Text(bundleId.isEmpty ? "Bundle ID" : bundleId)
+                    .foregroundStyle(bundleId.isEmpty ? .tertiary : .primary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 240, alignment: .leading)
+                    .help(bundleId.isEmpty ? "Bundle ID" : bundleId)
                 Picker("StoreKit", selection: $selectedStoreKitConfigurationFile) {
                     Text("None").tag("")
                     ForEach(storeKitFiles, id: \.self) { file in
@@ -73,7 +203,10 @@ struct ContentView: View {
                 }
                 .pickerStyle(.menu)
                 .frame(minWidth: 220)
-                TextField("DerivedData Path", text: $derivedDataPath)
+                Text("Derived Data")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Path", text: $derivedDataPath)
             }
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -136,24 +269,38 @@ struct ContentView: View {
                 Button("Save Config") { Task { await saveConfig() } }
                     .keyboardShortcut("s", modifiers: .command)
                     .disabled(isRunning)
-                Button("Run") { Task { await runLaunch() } }
+                Button("Run") { Task { await runLaunch(rerun: false) } }
+                    .disabled(isRunning)
+                Button("Rerun") { Task { await runLaunch(rerun: true) } }
                     .disabled(isRunning)
             }
 
-            TextEditor(text: $log)
-                .font(.system(size: 11, design: .monospaced))
+            LogTextView(text: $log)
                 .frame(minHeight: 120)
         }
         .padding()
         .task { await refreshDestinations() }
-        .onChange(of: projectPath) { _, _ in
-            Task { await loadProjectInfo() }
+        // Prefer task(id:) over onChange so a path set during launch (before the view
+        // appears) still triggers scheme/configuration scanning.
+        .task(id: "\(model.projectLoadToken)\n\(model.projectPath)") {
+            guard !model.projectPath.isEmpty else { return }
+            await loadProjectInfo()
         }
-        .onChange(of: scheme) { _, _ in
-            Task { await updateBundleId() }
+        // When users switch schemes, align configuration with the scheme's
+        // LaunchAction default from the .xcscheme file.
+        .task(id: "\(model.projectPath)\n\(scheme)") {
+            applySchemeLaunchConfigurationIfNeeded()
         }
-        .onChange(of: configuration) { _, _ in
-            Task { await updateBundleId() }
+        // Prefer task(id:) over onChange so picker-driven scheme/configuration
+        // changes always refresh the displayed bundle ID, including cancelling
+        // an in-flight lookup for the previous selection.
+        .task(id: "\(model.projectPath)\n\(scheme)\n\(configuration)") {
+            await updateBundleId()
+        }
+        .onChange(of: model.openMessage) { _, message in
+            guard let message else { return }
+            appendLog(message)
+            model.openMessage = nil
         }
         .fileImporter(
             isPresented: $showProjectPicker,
@@ -163,11 +310,7 @@ struct ContentView: View {
             switch result {
             case .success(let urls):
                 guard let url = urls.first else { return }
-                if url.pathExtension == "xcodeproj" {
-                    projectPath = url.path
-                } else {
-                    appendLog("Selected item is not an .xcodeproj: \(url.lastPathComponent)")
-                }
+                model.openProject(at: url)
             case .failure(let error):
                 appendLog("Failed to select project: \(error)")
             }
@@ -192,43 +335,59 @@ struct ContentView: View {
         }
     }
 
-    private func saveConfig() async {
+    private func currentConfig() -> NoXcodeConfig {
+        let simulatorSelections = simulators.compactMap { device -> SimulatorSelection? in
+            guard selectedSimulators.contains(device.udid), let platform = device.platform else { return nil }
+            return SimulatorSelection(udid: device.udid, platform: platform)
+        }
+        let physicalSelections = physicalDevices.compactMap { device -> PhysicalDeviceSelection? in
+            guard selectedPhysicalDevices.contains(device.identifier) else { return nil }
+            return PhysicalDeviceSelection(identifier: device.identifier, platform: device.platform)
+        }
+        return NoXcodeConfig(
+            project: projectPath,
+            scheme: scheme,
+            configuration: configuration,
+            storeKitConfigurationFile: selectedStoreKitConfigurationFile.isEmpty ? nil : selectedStoreKitConfigurationFile,
+            simulators: simulatorSelections,
+            physicalDevices: physicalSelections,
+            derivedDataPath: derivedDataPath,
+            launchArguments: parseCommandLineArguments(commandLineArgumentsText),
+            environmentVariableLines: parseEnvironmentVariableLines(environmentVariablesText)
+        )
+    }
+
+    @discardableResult
+    private func saveConfig() async -> Bool {
         do {
-            let simulatorSelections = simulators.compactMap { device -> SimulatorSelection? in
-                guard selectedSimulators.contains(device.udid), let platform = device.platform else { return nil }
-                return SimulatorSelection(udid: device.udid, platform: platform)
-            }
-            let physicalSelections = physicalDevices.compactMap { device -> PhysicalDeviceSelection? in
-                guard selectedPhysicalDevices.contains(device.identifier) else { return nil }
-                return PhysicalDeviceSelection(identifier: device.identifier, platform: device.platform)
-            }
-            let config = NoXcodeConfig(
-                project: projectPath,
-                scheme: scheme,
-                configuration: configuration,
-                bundleId: bundleId.isEmpty ? nil : bundleId,
-                storeKitConfigurationFile: selectedStoreKitConfigurationFile.isEmpty ? nil : selectedStoreKitConfigurationFile,
-                simulators: simulatorSelections,
-                physicalDevices: physicalSelections,
-                derivedDataPath: derivedDataPath,
-                launchArguments: parseCommandLineArguments(commandLineArgumentsText),
-                environmentVariableLines: parseEnvironmentVariableLines(environmentVariablesText)
-            )
-            try kit.writeConfig(config, projectPath: projectPath)
+            try kit.writeConfig(currentConfig(), projectPath: projectPath)
             appendLog("Saved .noxcode.json")
+            return true
         } catch {
             appendLog("Failed to save config: \(error)")
+            return false
         }
     }
 
-    private func runLaunch() async {
+    private func runLaunch(rerun: Bool) async {
+        log = ""
         isRunning = true
         defer { isRunning = false }
+        if !rerun {
+            guard await saveConfig() else { return }
+        }
         do {
             let config = try kit.readConfig(projectPath: projectPath)
-            try await kit.run(config: config, logger: ViewLogger(append: appendLog(_:)))
+            let workingDirectory = URL(fileURLWithPath: config.project).deletingLastPathComponent()
+            try await kit.run(
+                config: config,
+                workingDirectory: workingDirectory,
+                rerun: rerun,
+                logger: ViewLogger(append: appendLog(_:))
+            )
         } catch {
-            appendLog("Run failed: \(error)")
+            let action = rerun ? "Rerun" : "Run"
+            appendLog("\(action) failed: \(error)")
         }
     }
 
@@ -262,7 +421,7 @@ struct ContentView: View {
             if configuration.isEmpty || !configurations.contains(configuration) {
                 configuration = configurations.first ?? ""
             }
-            await updateBundleId()
+            applySchemeLaunchConfigurationIfNeeded()
         } catch {
             appendLog("Failed to read project info: \(error)")
         }
@@ -272,7 +431,6 @@ struct ContentView: View {
     }
 
     private func applyConfig(_ config: NoXcodeConfig) {
-        bundleId = config.bundleId ?? ""
         selectedStoreKitConfigurationFile = config.storeKitConfigurationFile ?? ""
         derivedDataPath = config.derivedDataPath ?? ".noxcode/DerivedData"
         commandLineArgumentsText = config.launchArguments.joined(separator: " ")
@@ -289,19 +447,49 @@ struct ContentView: View {
     }
 
     private func updateBundleId() async {
-        guard !projectPath.isEmpty, !scheme.isEmpty, !configuration.isEmpty else { return }
+        guard !projectPath.isEmpty, !scheme.isEmpty, !configuration.isEmpty else {
+            bundleId = ""
+            return
+        }
+
+        let requestedProject = projectPath
+        let requestedScheme = scheme
+        let requestedConfiguration = configuration
+        bundleId = ""
         do {
-            if let value = try await kit.fetchBundleIdentifier(
-                projectPath: projectPath,
-                scheme: scheme,
-                configuration: configuration
-            ) {
-                bundleId = value
-            } else {
-                bundleId = ""
-            }
+            let value = try await kit.fetchBundleIdentifier(
+                projectPath: requestedProject,
+                scheme: requestedScheme,
+                configuration: requestedConfiguration
+            ) ?? ""
+            guard projectPath == requestedProject,
+                  scheme == requestedScheme,
+                  configuration == requestedConfiguration else { return }
+            bundleId = value
+        } catch is CancellationError {
+            return
         } catch {
+            guard projectPath == requestedProject,
+                  scheme == requestedScheme,
+                  configuration == requestedConfiguration else { return }
+            bundleId = ""
             appendLog("Failed to read bundle ID: \(error)")
+        }
+    }
+
+    private func applySchemeLaunchConfigurationIfNeeded() {
+        guard !projectPath.isEmpty, !scheme.isEmpty else { return }
+        do {
+            guard let preferred = try kit.fetchLaunchConfiguration(
+                projectPath: projectPath,
+                scheme: scheme
+            ) else { return }
+            guard configurations.contains(preferred) else { return }
+            guard configuration != preferred else { return }
+            configuration = preferred
+            appendLog("Using \(preferred) for scheme \(scheme).")
+        } catch {
+            appendLog("Failed to read launch configuration for \(scheme): \(error)")
         }
     }
 
@@ -469,6 +657,58 @@ private struct ViewLogger: RunLogger {
         Task { @MainActor in
             append(event.message)
         }
+    }
+}
+
+private struct LogTextView: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.usesFontPanel = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.backgroundColor = .clear
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.string = text
+
+        let scrollView = NSScrollView()
+        scrollView.borderType = .bezelBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.documentView = textView
+
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        guard textView.string != text else { return }
+
+        let wasAtBottom = isAtBottom(scrollView)
+        textView.string = text
+
+        if wasAtBottom {
+            textView.scrollToEndOfDocument(nil)
+        }
+    }
+
+    private func isAtBottom(_ scrollView: NSScrollView) -> Bool {
+        guard let documentView = scrollView.documentView else { return true }
+        let visibleRect = scrollView.contentView.bounds
+        let distanceFromBottom = documentView.frame.maxY - visibleRect.maxY
+        return distanceFromBottom <= 2
     }
 }
 

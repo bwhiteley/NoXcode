@@ -17,6 +17,7 @@
 		CCA0AE462F19862B00B9CF94 /* NoXcode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NoXcode.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CCA0AE542F1986D500B9CF94 /* NoXcodeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoXcodeApp.swift; sourceTree = "<group>"; };
 		CCA0AE5A2F19872800B9CF94 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		CCA0AE5B2F19890000OPEN01 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		CCF7AA13300AC05200CBB99B /* noxcode_icon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = noxcode_icon.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -36,6 +37,7 @@
 			isa = PBXGroup;
 			children = (
 				CCA0AE542F1986D500B9CF94 /* NoXcodeApp.swift */,
+				CCA0AE5B2F19890000OPEN01 /* Info.plist */,
 				CCA0AE5A2F19872800B9CF94 /* Assets.xcassets */,
 				CCA0AE472F19862B00B9CF94 /* Products */,
 				CCF7AA13300AC05200CBB99B /* noxcode_icon.icon */,
@@ -271,6 +273,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -306,6 +309,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

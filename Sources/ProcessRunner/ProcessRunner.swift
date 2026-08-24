@@ -64,21 +64,53 @@ public final class ProcessRunner: Sendable {
             streamOutput?(chunk, true)
         }
 
-        try process.run()
-        process.waitUntilExit()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessResult, Error>) in
+                let resumeGate = ContinuationResumeGate()
 
-        stdoutHandle.readabilityHandler = nil
-        stderrHandle.readabilityHandler = nil
+                process.terminationHandler = { proc in
+                    stdoutHandle.readabilityHandler = nil
+                    stderrHandle.readabilityHandler = nil
+                    if let extra = try? stdoutHandle.readToEnd(), !extra.isEmpty {
+                        stdoutBuffer.append(extra)
+                    }
+                    if let extra = try? stderrHandle.readToEnd(), !extra.isEmpty {
+                        stderrBuffer.append(extra)
+                    }
 
-        let stdout = String(data: stdoutBuffer.data, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrBuffer.data, encoding: .utf8) ?? ""
-        let result = ProcessResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
+                    let stdout = String(data: stdoutBuffer.data, encoding: .utf8) ?? ""
+                    let stderr = String(data: stderrBuffer.data, encoding: .utf8) ?? ""
+                    let result = ProcessResult(exitCode: proc.terminationStatus, stdout: stdout, stderr: stderr)
+                    resumeGate.run {
+                        if Task.isCancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else if proc.terminationStatus != 0 {
+                            continuation.resume(
+                                throwing: ProcessRunnerError.nonZeroExit(
+                                    code: result.exitCode,
+                                    stdout: stdout,
+                                    stderr: stderr
+                                )
+                            )
+                        } else {
+                            continuation.resume(returning: result)
+                        }
+                    }
+                }
 
-        if process.terminationStatus != 0 {
-            throw ProcessRunnerError.nonZeroExit(code: result.exitCode, stdout: stdout, stderr: stderr)
+                do {
+                    try process.run()
+                } catch {
+                    resumeGate.run {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            if process.isRunning {
+                process.terminate()
+            }
         }
-
-        return result
     }
 }
 
@@ -97,5 +129,18 @@ private final class OutputBuffer: @unchecked Sendable {
         let copy = storage
         lock.unlock()
         return copy
+    }
+}
+
+private final class ContinuationResumeGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasResumed = false
+
+    func run(_ action: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !hasResumed else { return }
+        hasResumed = true
+        action()
     }
 }

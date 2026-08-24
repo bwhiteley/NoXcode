@@ -27,7 +27,7 @@ struct ListSims: AsyncParsableCommand {
         let devices = try await kit.listSimulators()
         if json {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             let data = try encoder.encode(devices)
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
@@ -54,7 +54,7 @@ struct ListDevices: AsyncParsableCommand {
         let devices = try await kit.listPhysicalDevices()
         if json {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             let data = try encoder.encode(devices)
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
@@ -81,9 +81,6 @@ struct Init: AsyncParsableCommand {
 
     @Option(name: .customLong("config"), help: "Build configuration (Debug/Release)")
     var configuration: String
-
-    @Option(help: "Bundle identifier override")
-    var bundleId: String?
 
     @Option(help: "StoreKit configuration file path (.storekit), relative to project directory or absolute")
     var storekit: String?
@@ -136,10 +133,9 @@ struct Init: AsyncParsableCommand {
             project: projectPath,
             scheme: scheme,
             configuration: configuration,
-            bundleId: bundleId,
             storeKitConfigurationFile: storeKitConfigurationFile,
             simulators: selections,
-                physicalDevices: physicalSelections,
+            physicalDevices: physicalSelections,
             derivedDataPath: ".noxcode/DerivedData"
         )
         try kit.writeConfig(config, projectPath: projectPath)
@@ -190,7 +186,7 @@ struct Run: AsyncParsableCommand {
     @Flag(help: "Print actions without executing them")
     var dryRun: Bool = false
 
-    @Flag(help: "Skip build + install and only (re)launch with configured args/env")
+    @Flag(help: "Skip build and reinstall + relaunch the existing build product")
     var rerun: Bool = false
 
     func run() async throws {

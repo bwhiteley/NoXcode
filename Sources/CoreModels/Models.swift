@@ -135,7 +135,6 @@ public struct NoXcodeConfig: Codable, Sendable {
     public let project: String
     public let scheme: String
     public let configuration: String
-    public let bundleId: String?
     public let storeKitConfigurationFile: String?
     public let simulators: [SimulatorSelection]
     public let physicalDevices: [PhysicalDeviceSelection]
@@ -151,7 +150,6 @@ public struct NoXcodeConfig: Codable, Sendable {
         project: String,
         scheme: String,
         configuration: String,
-        bundleId: String? = nil,
         storeKitConfigurationFile: String? = nil,
         simulators: [SimulatorSelection],
         physicalDevices: [PhysicalDeviceSelection] = [],
@@ -162,7 +160,6 @@ public struct NoXcodeConfig: Codable, Sendable {
         self.project = project
         self.scheme = scheme
         self.configuration = configuration
-        self.bundleId = bundleId
         self.storeKitConfigurationFile = storeKitConfigurationFile
         self.simulators = simulators
         self.physicalDevices = physicalDevices
@@ -175,7 +172,6 @@ public struct NoXcodeConfig: Codable, Sendable {
         project: String,
         scheme: String,
         configuration: String,
-        bundleId: String? = nil,
         storeKitConfigurationFile: String? = nil,
         simulators: [SimulatorSelection],
         physicalDevices: [PhysicalDeviceSelection] = [],
@@ -187,7 +183,6 @@ public struct NoXcodeConfig: Codable, Sendable {
             project: project,
             scheme: scheme,
             configuration: configuration,
-            bundleId: bundleId,
             storeKitConfigurationFile: storeKitConfigurationFile,
             simulators: simulators,
             physicalDevices: physicalDevices,
@@ -201,7 +196,6 @@ public struct NoXcodeConfig: Codable, Sendable {
         case project
         case scheme
         case configuration
-        case bundleId
         case storeKitConfigurationFile
         case simulators
         case physicalDevices
@@ -216,7 +210,6 @@ public struct NoXcodeConfig: Codable, Sendable {
         project = try container.decode(String.self, forKey: .project)
         scheme = try container.decode(String.self, forKey: .scheme)
         configuration = try container.decode(String.self, forKey: .configuration)
-        bundleId = try container.decodeIfPresent(String.self, forKey: .bundleId)
         storeKitConfigurationFile = try container.decodeIfPresent(String.self, forKey: .storeKitConfigurationFile)
         simulators = try container.decode([SimulatorSelection].self, forKey: .simulators)
         physicalDevices = try container.decodeIfPresent([PhysicalDeviceSelection].self, forKey: .physicalDevices) ?? []
@@ -230,7 +223,6 @@ public struct NoXcodeConfig: Codable, Sendable {
         try container.encode(project, forKey: .project)
         try container.encode(scheme, forKey: .scheme)
         try container.encode(configuration, forKey: .configuration)
-        try container.encodeIfPresent(bundleId, forKey: .bundleId)
         try container.encodeIfPresent(storeKitConfigurationFile, forKey: .storeKitConfigurationFile)
         try container.encode(simulators, forKey: .simulators)
         try container.encode(physicalDevices, forKey: .physicalDevices)
