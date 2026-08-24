@@ -159,126 +159,189 @@ struct ContentView: View {
     private let kit = NoXcodeKit()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                TextField("Project (.xcodeproj)", text: $model.projectPath)
-                Button("Browse…") { showProjectPicker = true }
-                Text("Scheme")
-                    .foregroundStyle(.secondary)
-                Menu(scheme.isEmpty ? "Select" : scheme) {
-                    ForEach(schemes, id: \.self) { value in
-                        Button(value) {
-                            scheme = value
+        ZStack {
+            LCARSTheme.background.ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 12) {
+                lcarsPanel(title: "Project Routing", accent: LCARSTheme.accentOrange) {
+                    HStack(spacing: 10) {
+                        TextField("Project (.xcodeproj)", text: $model.projectPath)
+                            .lcarsField()
+                        Button("Browse") { showProjectPicker = true }
+                            .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentGold, textColor: LCARSTheme.textDark))
+                        Menu {
+                            ForEach(schemes, id: \.self) { value in
+                                Button(value) {
+                                    scheme = value
+                                }
+                            }
+                        } label: {
+                            lcarsMenuLabel(scheme.isEmpty ? "Scheme" : scheme, isPlaceholder: scheme.isEmpty)
+                        }
+                        .lcarsMenuTrigger(isDimmed: schemes.isEmpty)
+                        .frame(minWidth: 200)
+                        .disabled(schemes.isEmpty)
+                        .lcarsControl(isDimmed: schemes.isEmpty)
+
+                        Menu {
+                            ForEach(configurations, id: \.self) { value in
+                                Button(value) {
+                                    configuration = value
+                                }
+                            }
+                        } label: {
+                            lcarsMenuLabel(
+                                configuration.isEmpty ? "Configuration" : configuration,
+                                isPlaceholder: configuration.isEmpty
+                            )
+                        }
+                        .lcarsMenuTrigger(isDimmed: configurations.isEmpty)
+                        .frame(minWidth: 180)
+                        .disabled(configurations.isEmpty)
+                        .lcarsControl(isDimmed: configurations.isEmpty)
+                    }
+                }
+
+                if isLoadingProjectInfo {
+                    HStack(spacing: 10) {
+                        LCARSSpinner()
+                        Text("Scanning project for commands and build configurations…")
+                            .font(.caption)
+                            .foregroundStyle(LCARSTheme.textSecondary)
+                    }
+                    .padding(.horizontal, 12)
+                }
+
+                lcarsPanel(title: "Launch Context", accent: LCARSTheme.accentPurple) {
+                    HStack(spacing: 10) {
+                        labeledValue(title: "Bundle ID", value: bundleId.isEmpty ? "Unavailable" : bundleId)
+                        Menu {
+                            Button("None") {
+                                selectedStoreKitConfigurationFile = ""
+                            }
+                            ForEach(storeKitFiles, id: \.self) { file in
+                                Button(file) {
+                                    selectedStoreKitConfigurationFile = file
+                                }
+                            }
+                        } label: {
+                            let selectedValue = selectedStoreKitConfigurationFile.isEmpty ? "None" : selectedStoreKitConfigurationFile
+                            lcarsMenuLabel(selectedValue, isPlaceholder: selectedStoreKitConfigurationFile.isEmpty)
+                        }
+                        .lcarsMenuTrigger()
+                        .frame(minWidth: 240)
+                        .lcarsControl()
+                        Text("Derived Data")
+                            .font(.caption)
+                            .foregroundStyle(LCARSTheme.textSecondary)
+                        TextField("Path", text: $derivedDataPath)
+                            .lcarsField()
+                    }
+
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Command Line Arguments")
+                                .font(.caption)
+                                .foregroundStyle(LCARSTheme.textSecondary)
+                            TextEditor(text: $commandLineArgumentsText)
+                                .font(.system(size: 11, design: .monospaced))
+                                .frame(minHeight: 56)
+                                .lcarsEditor()
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Environment Variables (KEY=VALUE, one per line; # and // comments are ignored at launch)")
+                                .font(.caption)
+                                .foregroundStyle(LCARSTheme.textSecondary)
+                            TextEditor(text: $environmentVariablesText)
+                                .font(.system(size: 11, design: .monospaced))
+                                .frame(minHeight: 56)
+                                .lcarsEditor()
                         }
                     }
                 }
-                .frame(minWidth: 140)
-                .disabled(schemes.isEmpty)
 
-                Picker("Configuration", selection: $configuration) {
-                    ForEach(configurations, id: \.self) { value in
-                        Text(value).tag(value)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(minWidth: 120)
-                .disabled(configurations.isEmpty)
-            }
-            if isLoadingProjectInfo {
-                ProgressView("Scanning project…")
-            }
-            HStack(spacing: 12) {
-                Text(bundleId.isEmpty ? "Bundle ID" : bundleId)
-                    .foregroundStyle(bundleId.isEmpty ? .tertiary : .primary)
-                    .textSelection(.enabled)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 240, alignment: .leading)
-                    .help(bundleId.isEmpty ? "Bundle ID" : bundleId)
-                Picker("StoreKit", selection: $selectedStoreKitConfigurationFile) {
-                    Text("None").tag("")
-                    ForEach(storeKitFiles, id: \.self) { file in
-                        Text(file).tag(file)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(minWidth: 220)
-                Text("Derived Data")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("Path", text: $derivedDataPath)
-            }
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Command Line Arguments")
+                if !configLoadStatus.isEmpty {
+                    Text(configLoadStatus)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextEditor(text: $commandLineArgumentsText)
-                        .font(.system(size: 11, design: .monospaced))
-                        .frame(minHeight: 52)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                        .foregroundStyle(LCARSTheme.textSecondary)
+                        .padding(.horizontal, 12)
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Environment Variables (KEY=VALUE, one per line; # and // comments are ignored at launch)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextEditor(text: $environmentVariablesText)
-                        .font(.system(size: 11, design: .monospaced))
-                        .frame(minHeight: 52)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                }
-            }
-            if !configLoadStatus.isEmpty {
-                Text(configLoadStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            HStack {
-                Text("Destinations")
-                Spacer()
-                Button("Refresh") { Task { await refreshDestinations() } }
-            }
-
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Simulators")
-                        .font(.headline)
-                    List(simulators) { simulator in
-                        Toggle(isOn: simulatorBinding(for: simulator)) {
-                            simulatorRow(for: simulator)
-                        }
-                        .toggleStyle(.checkbox)
+                lcarsPanel(title: "Destination Matrix", accent: LCARSTheme.accentBlue) {
+                    HStack {
+                        Text("Select simulators and physical devices")
+                            .font(.caption)
+                            .foregroundStyle(LCARSTheme.textSecondary)
+                        Spacer()
+                        Button("Refresh") { Task { await refreshDestinations() } }
+                            .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentBlue, textColor: LCARSTheme.textDark))
                     }
-                }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Physical Devices")
-                        .font(.headline)
-                    List(physicalDevices) { device in
-                        Toggle(isOn: physicalDeviceBinding(for: device)) {
-                            physicalDeviceRow(for: device)
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Simulators")
+                                .font(.headline)
+                                .foregroundStyle(LCARSTheme.textPrimary)
+                            List(simulators) { simulator in
+                                Toggle(isOn: simulatorBinding(for: simulator)) {
+                                    simulatorRow(for: simulator)
+                                }
+                                .toggleStyle(.checkbox)
+                            }
+                            .listStyle(.plain)
+                            .scrollContentBackground(.hidden)
+                            .background(LCARSTheme.controlBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(LCARSTheme.controlBorder, lineWidth: 1)
+                            )
                         }
-                        .toggleStyle(.checkbox)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Physical Devices")
+                                .font(.headline)
+                                .foregroundStyle(LCARSTheme.textPrimary)
+                            List(physicalDevices) { device in
+                                Toggle(isOn: physicalDeviceBinding(for: device)) {
+                                    physicalDeviceRow(for: device)
+                                }
+                                .toggleStyle(.checkbox)
+                            }
+                            .listStyle(.plain)
+                            .scrollContentBackground(.hidden)
+                            .background(LCARSTheme.controlBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(LCARSTheme.controlBorder, lineWidth: 1)
+                            )
+                        }
                     }
+                    .frame(minHeight: 210)
+                }
+
+                HStack(spacing: 10) {
+                    Button("Save Config") { Task { await saveConfig() } }
+                        .keyboardShortcut("s", modifiers: .command)
+                        .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentTeal, textColor: LCARSTheme.textDark))
+                        .disabled(isRunning)
+                    Button("Run") { Task { await runLaunch(rerun: false) } }
+                        .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentOrange, textColor: LCARSTheme.textDark))
+                        .disabled(isRunning)
+                    Button("Rerun") { Task { await runLaunch(rerun: true) } }
+                        .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentPurple, textColor: .white))
+                        .disabled(isRunning)
+                }
+
+                lcarsPanel(title: "Operations Log", accent: LCARSTheme.accentTeal) {
+                    LogTextView(text: $log)
+                        .frame(minHeight: 120)
                 }
             }
-            .frame(minHeight: 200)
-
-            HStack {
-                Button("Save Config") { Task { await saveConfig() } }
-                    .keyboardShortcut("s", modifiers: .command)
-                    .disabled(isRunning)
-                Button("Run") { Task { await runLaunch(rerun: false) } }
-                    .disabled(isRunning)
-                Button("Rerun") { Task { await runLaunch(rerun: true) } }
-                    .disabled(isRunning)
-            }
-
-            LogTextView(text: $log)
-                .frame(minHeight: 120)
+            .padding(14)
+            .foregroundStyle(LCARSTheme.textPrimary)
         }
-        .padding()
         .task { await refreshDestinations() }
         // Prefer task(id:) over onChange so a path set during launch (before the view
         // appears) still triggers scheme/configuration scanning.
@@ -314,6 +377,77 @@ struct ContentView: View {
             case .failure(let error):
                 appendLog("Failed to select project: \(error)")
             }
+        }
+    }
+
+    private func lcarsPanel<Content: View>(
+        title: String,
+        accent: Color,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(accent)
+                    .frame(width: 56, height: 12)
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(LCARSTheme.textSecondary)
+                Rectangle()
+                    .fill(accent.opacity(0.45))
+                    .frame(height: 1)
+            }
+            content()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(LCARSTheme.panelBackground.opacity(0.95))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(LCARSTheme.panelBorder, lineWidth: 1)
+                )
+        )
+    }
+
+    private func labeledValue(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(LCARSTheme.textSecondary)
+            Text(value)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(LCARSTheme.textPrimary)
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .truncationMode(.middle)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(LCARSTheme.controlBackground)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(LCARSTheme.controlBorder, lineWidth: 1)
+                        )
+                )
+                .help(value)
+        }
+        .frame(maxWidth: 280, alignment: .leading)
+    }
+
+    private func lcarsMenuLabel(_ title: String, isPlaceholder: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(isPlaceholder ? LCARSTheme.textSecondary : LCARSTheme.textPrimary)
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LCARSTheme.textSecondary)
         }
     }
 
@@ -537,14 +671,17 @@ struct ContentView: View {
     private func simulatorRow(for simulator: SimDevice) -> some View {
         HStack(spacing: 10) {
             Text(simulator.name)
+                .foregroundStyle(LCARSTheme.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: DestinationColumn.simulatorNameWidth, alignment: .leading)
             Text(simulator.osDisplayName)
                 .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(LCARSTheme.textSecondary)
                 .frame(width: DestinationColumn.osWidth, alignment: .leading)
             Text(simulator.state.rawValue)
                 .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(LCARSTheme.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: DestinationColumn.simulatorStateWidth, alignment: .leading)
@@ -560,14 +697,17 @@ struct ContentView: View {
     private func physicalDeviceRow(for device: PhysicalDevice) -> some View {
         HStack(spacing: 10) {
             Text(device.name)
+                .foregroundStyle(LCARSTheme.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: DestinationColumn.deviceNameWidth, alignment: .leading)
             Text(device.osDisplayName)
                 .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(LCARSTheme.textSecondary)
                 .frame(width: DestinationColumn.osWidth, alignment: .leading)
             Text(device.state)
                 .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(LCARSTheme.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: DestinationColumn.deviceStateWidth, alignment: .leading)
@@ -642,6 +782,29 @@ struct ContentView: View {
     }
 }
 
+private enum LCARSTheme {
+    static let background = LinearGradient(
+        colors: [
+            Color(red: 0.14, green: 0.11, blue: 0.22),
+            Color(red: 0.08, green: 0.07, blue: 0.14)
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let panelBackground = Color(red: 0.19, green: 0.16, blue: 0.30)
+    static let panelBorder = Color(red: 0.99, green: 0.67, blue: 0.37).opacity(0.55)
+    static let controlBackground = Color(red: 0.25, green: 0.22, blue: 0.37)
+    static let controlBorder = Color(red: 0.98, green: 0.75, blue: 0.48).opacity(0.6)
+    static let textPrimary = Color(red: 0.99, green: 0.97, blue: 0.92)
+    static let textSecondary = Color(red: 0.89, green: 0.83, blue: 0.73)
+    static let textDark = Color(red: 0.13, green: 0.10, blue: 0.08)
+    static let accentOrange = Color(red: 0.97, green: 0.54, blue: 0.26)
+    static let accentGold = Color(red: 0.96, green: 0.74, blue: 0.34)
+    static let accentPurple = Color(red: 0.62, green: 0.45, blue: 0.90)
+    static let accentBlue = Color(red: 0.42, green: 0.72, blue: 0.95)
+    static let accentTeal = Color(red: 0.36, green: 0.86, blue: 0.82)
+}
+
 private enum DestinationColumn {
     static let simulatorNameWidth: CGFloat = 300
     static let deviceNameWidth: CGFloat = 220
@@ -670,6 +833,12 @@ private struct LogTextView: NSViewRepresentable {
         textView.isRichText = false
         textView.usesFontPanel = false
         textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.textColor = NSColor(
+            red: 0.98,
+            green: 0.96,
+            blue: 0.91,
+            alpha: 1
+        )
         textView.backgroundColor = .clear
         textView.textContainerInset = NSSize(width: 6, height: 6)
         textView.textContainer?.widthTracksTextView = true
@@ -709,6 +878,105 @@ private struct LogTextView: NSViewRepresentable {
         let visibleRect = scrollView.contentView.bounds
         let distanceFromBottom = documentView.frame.maxY - visibleRect.maxY
         return distanceFromBottom <= 2
+    }
+}
+
+private struct LCARSSpinner: View {
+    @State private var rotation: Double = 0
+
+    var body: some View {
+        Circle()
+            .trim(from: 0.15, to: 1)
+            .stroke(
+                AngularGradient(
+                    colors: [
+                        LCARSTheme.accentGold.opacity(0.25),
+                        LCARSTheme.accentGold,
+                        LCARSTheme.accentOrange
+                    ],
+                    center: .center
+                ),
+                style: StrokeStyle(lineWidth: 2.7, lineCap: .round)
+            )
+            .frame(width: 15, height: 15)
+            .rotationEffect(.degrees(rotation))
+            .onAppear {
+                rotation = 360
+            }
+            .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: rotation)
+            .accessibilityLabel("Loading")
+    }
+}
+
+private struct LCARSButtonStyle: ButtonStyle {
+    let accent: Color
+    let textColor: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(textColor.opacity(configuration.isPressed ? 0.85 : 1))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(accent.opacity(configuration.isPressed ? 0.7 : 1))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+            )
+    }
+}
+
+private extension View {
+    func lcarsField() -> some View {
+        textFieldStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .foregroundStyle(LCARSTheme.textPrimary)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LCARSTheme.controlBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(LCARSTheme.controlBorder, lineWidth: 1)
+                    )
+            )
+    }
+
+    func lcarsControl(isDimmed: Bool = false) -> some View {
+        padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .foregroundStyle(isDimmed ? LCARSTheme.textSecondary : LCARSTheme.textPrimary)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LCARSTheme.controlBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(LCARSTheme.controlBorder, lineWidth: 1)
+                    )
+            )
+    }
+
+    func lcarsEditor() -> some View {
+        scrollContentBackground(.hidden)
+            .padding(6)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LCARSTheme.controlBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(LCARSTheme.controlBorder, lineWidth: 1)
+                    )
+            )
+            .foregroundStyle(LCARSTheme.textPrimary)
+    }
+
+    func lcarsMenuTrigger(isDimmed: Bool = false) -> some View {
+        buttonStyle(.plain)
+            .menuStyle(.borderlessButton)
+            .opacity(isDimmed ? 0.72 : 1)
     }
 }
 
