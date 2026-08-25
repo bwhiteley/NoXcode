@@ -164,42 +164,39 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 lcarsPanel(title: "Project Routing", accent: LCARSTheme.accentOrange) {
-                    HStack(spacing: 10) {
-                        TextField("Project (.xcodeproj)", text: $model.projectPath)
-                            .lcarsField()
-                        Button("Browse") { showProjectPicker = true }
-                            .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentGold, textColor: LCARSTheme.textDark))
-                        Menu {
-                            ForEach(schemes, id: \.self) { value in
-                                Button(value) {
-                                    scheme = value
-                                }
-                            }
-                        } label: {
-                            lcarsMenuLabel(scheme.isEmpty ? "Scheme" : scheme, isPlaceholder: scheme.isEmpty)
-                        }
-                        .lcarsMenuTrigger(isDimmed: schemes.isEmpty)
-                        .frame(minWidth: 200)
-                        .disabled(schemes.isEmpty)
-                        .lcarsControl(isDimmed: schemes.isEmpty)
+                    GeometryReader { proxy in
+                        let columnSpacing: CGFloat = 10
+                        let usableWidth = max(0, proxy.size.width - (columnSpacing * 2))
+                        let projectColumnWidth = usableWidth * 0.5
+                        let schemeColumnWidth = usableWidth * 0.3
+                        let configurationColumnWidth = usableWidth * 0.2
 
-                        Menu {
-                            ForEach(configurations, id: \.self) { value in
-                                Button(value) {
-                                    configuration = value
-                                }
+                        HStack(spacing: columnSpacing) {
+                            HStack(spacing: 6) {
+                                TextField("Project (.xcodeproj)", text: $model.projectPath)
+                                    .lcarsField()
+                                Button("Browse") { showProjectPicker = true }
+                                    .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentGold, textColor: LCARSTheme.textDark))
+                                    .frame(width: 92)
                             }
-                        } label: {
-                            lcarsMenuLabel(
-                                configuration.isEmpty ? "Configuration" : configuration,
-                                isPlaceholder: configuration.isEmpty
+                            .frame(width: projectColumnWidth)
+
+                            LCARSPicker(
+                                options: schemes,
+                                selection: $scheme,
+                                placeholder: "Scheme"
                             )
+                            .frame(width: schemeColumnWidth)
+
+                            LCARSPicker(
+                                options: configurations,
+                                selection: $configuration,
+                                placeholder: "Configuration"
+                            )
+                            .frame(width: configurationColumnWidth)
                         }
-                        .lcarsMenuTrigger(isDimmed: configurations.isEmpty)
-                        .frame(minWidth: 180)
-                        .disabled(configurations.isEmpty)
-                        .lcarsControl(isDimmed: configurations.isEmpty)
                     }
+                    .frame(height: 40)
                 }
 
                 if isLoadingProjectInfo {
@@ -217,21 +214,12 @@ struct ContentView: View {
                         labeledValue(title: "Bundle ID", value: bundleId.isEmpty ? "Unavailable" : bundleId)
                         VStack(alignment: .leading, spacing: 3) {
                             capsuleLabel("StoreKit Config")
-                            Menu {
-                                Button("None") {
-                                    selectedStoreKitConfigurationFile = ""
-                                }
-                                ForEach(storeKitFiles, id: \.self) { file in
-                                    Button(file) {
-                                        selectedStoreKitConfigurationFile = file
-                                    }
-                                }
-                            } label: {
-                                let selectedValue = selectedStoreKitConfigurationFile.isEmpty ? "None" : selectedStoreKitConfigurationFile
-                                lcarsMenuLabel(selectedValue, isPlaceholder: selectedStoreKitConfigurationFile.isEmpty)
-                            }
-                            .lcarsMenuTrigger()
-                            .lcarsControl()
+                            LCARSPicker(
+                                options: storeKitFiles,
+                                selection: $selectedStoreKitConfigurationFile,
+                                placeholder: "None",
+                                emptyTitle: "None"
+                            )
                         }
                         .frame(minWidth: 240, maxWidth: 280, alignment: .leading)
 
@@ -347,6 +335,7 @@ struct ContentView: View {
             .padding(14)
             .foregroundStyle(LCARSTheme.textPrimary)
         }
+        .preferredColorScheme(.dark)
         .task { await refreshDestinations() }
         // Prefer task(id:) over onChange so a path set during launch (before the view
         // appears) still triggers scheme/configuration scanning.
@@ -445,20 +434,6 @@ struct ContentView: View {
             .font(.system(size: 10, weight: .bold, design: .monospaced))
             .foregroundStyle(LCARSTheme.textSecondary)
             .lineLimit(1)
-    }
-
-    private func lcarsMenuLabel(_ title: String, isPlaceholder: Bool = false) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(isPlaceholder ? LCARSTheme.textSecondary : LCARSTheme.textPrimary)
-            Spacer(minLength: 4)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(LCARSTheme.textSecondary)
-        }
     }
 
     private func refreshDestinations() async {
@@ -982,11 +957,120 @@ private extension View {
             )
             .foregroundStyle(LCARSTheme.textPrimary)
     }
+}
 
-    func lcarsMenuTrigger(isDimmed: Bool = false) -> some View {
-        buttonStyle(.plain)
-            .menuStyle(.borderlessButton)
-            .opacity(isDimmed ? 0.72 : 1)
+private struct LCARSPicker: View {
+    let options: [String]
+    @Binding var selection: String
+    var placeholder: String
+    var emptyTitle: String? = nil
+    @State private var isPresentingMenu = false
+
+    private var isEnabled: Bool {
+        !options.isEmpty || emptyTitle != nil
+    }
+
+    private var isPlaceholder: Bool {
+        selection.isEmpty
+    }
+
+    private var labelTitle: String {
+        if selection.isEmpty {
+            return emptyTitle ?? placeholder
+        }
+        return selection
+    }
+
+    private var menuOptions: [(id: String, title: String)] {
+        var items: [(id: String, title: String)] = []
+        if let emptyTitle {
+            items.append(("", emptyTitle))
+        }
+        items.append(contentsOf: options.map { ($0, $0) })
+        return items
+    }
+
+    var body: some View {
+        Button {
+            isPresentingMenu = true
+        } label: {
+            HStack(spacing: 6) {
+                Text(labelTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(isPlaceholder ? LCARSTheme.textSecondary : LCARSTheme.textPrimary)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(LCARSTheme.textSecondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .lcarsControl(isDimmed: !isEnabled)
+        .background(
+            LCARSMenuPresenter(
+                isPresented: $isPresentingMenu,
+                options: menuOptions,
+                selection: $selection
+            )
+        )
+    }
+}
+
+private struct LCARSMenuPresenter: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    var options: [(id: String, title: String)]
+    @Binding var selection: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selection: $selection)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        context.coordinator.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.view = nsView
+        context.coordinator.options = options
+        context.coordinator.selection = $selection
+        guard isPresented else { return }
+        DispatchQueue.main.async {
+            context.coordinator.showMenu()
+            isPresented = false
+        }
+    }
+
+    final class Coordinator: NSObject {
+        var view = NSView()
+        var options: [(id: String, title: String)] = []
+        var selection: Binding<String>
+
+        init(selection: Binding<String>) {
+            self.selection = selection
+        }
+
+        func showMenu() {
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            for option in options {
+                let item = NSMenuItem(title: option.title, action: #selector(pick(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = option.id
+                item.state = option.id == selection.wrappedValue ? .on : .off
+                menu.addItem(item)
+            }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height), in: view)
+        }
+
+        @objc func pick(_ sender: NSMenuItem) {
+            selection.wrappedValue = sender.representedObject as? String ?? ""
+        }
     }
 }
 
