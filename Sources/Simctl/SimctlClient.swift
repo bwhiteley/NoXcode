@@ -70,7 +70,13 @@ public final class SimctlClient: Sendable {
     }
 
     public func openSimulatorApp() async throws {
-        _ = try await runner.run("/usr/bin/osascript", ["-e", "tell application \"Simulator\" to activate"])
+        do {
+            _ = try await runner.run("/usr/bin/open", ["-a", "Simulator"])
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            _ = try await runner.run("/usr/bin/open", ["-a", "DeviceHub"])
+        }
     }
 
     private func shouldIgnoreBootError(_ error: ProcessRunnerError) -> Bool {

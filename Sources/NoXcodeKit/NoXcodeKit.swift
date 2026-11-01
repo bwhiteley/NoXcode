@@ -165,6 +165,9 @@ public final class NoXcodeKit: Sendable {
                 logger: logger
             )
             let targetsSummary = "\(config.simulators.count) simulators and \(config.physicalDevices.count) physical devices"
+            if !config.physicalDevices.isEmpty {
+                logger.log(.init("Would reconnect each physical device and enable developer services before install."))
+            }
             if rerun {
                 logger.log(.init("Would install + launch \(bundleId) on \(targetsSummary) (skip build)."))
             } else {
@@ -173,6 +176,7 @@ public final class NoXcodeKit: Sendable {
             return
         }
 
+        try Task.checkCancellation()
         try await withThrowingTaskGroup(of: (BuildBucketKey, BuildResult).self) { group in
             for bucket in buckets {
                 group.addTask {
@@ -227,6 +231,7 @@ public final class NoXcodeKit: Sendable {
             }
         }
 
+        try Task.checkCancellation()
         let bundleId = try resolveBundleId(buildResults: buildResults, logger: logger)
 
         let simulatorDevicesByUDID = config.simulators.isEmpty
@@ -295,18 +300,35 @@ public final class NoXcodeKit: Sendable {
                         )
                         return
                     }
-                    try await self.devicectl.install(physicalDevice.identifier, appPath: build.appPath)
-                    try await self.devicectl.launch(
-                        physicalDevice.identifier,
-                        bundleId: bundleId,
-                        arguments: config.launchArguments,
-                        environmentVariables: config.environmentVariables,
-                        terminateRunningProcess: true
-                    )
                     let resolvedDevice = physicalDevicesByIdentifier[physicalDevice.identifier]
                         ?? physicalDevicesByUDID[physicalDevice.identifier]
-                    let deviceName = resolvedDevice?.name ?? "Unknown Device"
+                    let deviceName = resolvedDevice?.name ?? physicalDevice.identifier
                     let osVersion = resolvedDevice?.osVersion ?? "Unknown OS"
+                    try await self.preparePhysicalDevice(
+                        physicalDevice.identifier,
+                        displayName: deviceName,
+                        logger: logger
+                    )
+                    try await self.runPhysicalDeviceCommand(
+                        identifier: physicalDevice.identifier,
+                        displayName: deviceName,
+                        logger: logger
+                    ) {
+                        try await self.devicectl.install(physicalDevice.identifier, appPath: build.appPath)
+                    }
+                    try await self.runPhysicalDeviceCommand(
+                        identifier: physicalDevice.identifier,
+                        displayName: deviceName,
+                        logger: logger
+                    ) {
+                        try await self.devicectl.launch(
+                            physicalDevice.identifier,
+                            bundleId: bundleId,
+                            arguments: config.launchArguments,
+                            environmentVariables: config.environmentVariables,
+                            terminateRunningProcess: true
+                        )
+                    }
                     logger.log(
                         .init(
                             "Launched \(bundleId) on \(physicalDevice.identifier) (\(deviceName), OS \(osVersion))."
@@ -319,6 +341,34 @@ public final class NoXcodeKit: Sendable {
 
         if !config.simulators.isEmpty {
             try await simctl.openSimulatorApp()
+        }
+    }
+
+    private func preparePhysicalDevice(
+        _ identifier: String,
+        displayName: String,
+        logger: RunLogger
+    ) async throws {
+        try await devicectl.prepareForDeployment(identifier, displayName: displayName) { message in
+            logger.log(.init(message))
+        }
+    }
+
+    private func runPhysicalDeviceCommand(
+        identifier: String,
+        displayName: String,
+        logger: RunLogger,
+        operation: @Sendable () async throws -> Void
+    ) async throws {
+        do {
+            try await operation()
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            guard DevicectlClient.isRetryableConnectionFailure(error) else { throw error }
+            logger.log(.init("Lost the connection to \(displayName). Reconnecting…"))
+            try await preparePhysicalDevice(identifier, displayName: displayName, logger: logger)
+            try await operation()
         }
     }
 

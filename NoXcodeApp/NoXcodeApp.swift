@@ -15,7 +15,8 @@ final class AppModel {
     /// Bumped on every successful open so analysis re-runs even if the path is unchanged.
     private(set) var projectLoadToken: UInt = 0
 
-    func openProject(at url: URL) {
+    @discardableResult
+    func openProject(at url: URL) -> Bool {
         let accessed = url.startAccessingSecurityScopedResource()
         defer {
             if accessed {
@@ -27,17 +28,18 @@ final class AppModel {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory) else {
             openMessage = "Path does not exist: \(resolved.path)"
-            return
+            return false
         }
 
         guard let projectURL = resolveXcodeProject(from: resolved, isDirectory: isDirectory.boolValue) else {
-            return
+            return false
         }
 
         projectPath = projectURL.path
         NSDocumentController.shared.noteNewRecentDocumentURL(projectURL)
         projectLoadToken &+= 1
         openMessage = nil
+        return true
     }
 
     /// Accepts an `.xcodeproj` package, or a folder that contains exactly one.
@@ -69,30 +71,36 @@ final class AppModel {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
-        Task { @MainActor in
-            let projectURL = urls.first(where: { $0.pathExtension == "xcodeproj" }) ?? urls.first
-            guard let projectURL else { return }
-            AppModel.shared.openProject(at: projectURL)
+        let projectURL = urls.first(where: { $0.pathExtension == "xcodeproj" }) ?? urls.first
+        guard let projectURL else { return }
+        if AppModel.shared.openProject(at: projectURL) {
             NSApp.activate(ignoringOtherApps: true)
         }
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-        Task { @MainActor in
-            AppModel.shared.openProject(at: URL(fileURLWithPath: filename))
+        let didOpen = AppModel.shared.openProject(at: URL(fileURLWithPath: filename))
+        if didOpen {
             NSApp.activate(ignoringOtherApps: true)
         }
-        return true
+        return didOpen
     }
 
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
-        Task { @MainActor in
-            if let first = filenames.first {
-                AppModel.shared.openProject(at: URL(fileURLWithPath: first))
+        let didOpen: Bool
+        if let first = filenames.first {
+            didOpen = AppModel.shared.openProject(at: URL(fileURLWithPath: first))
+            if didOpen {
                 NSApp.activate(ignoringOtherApps: true)
             }
-            sender.reply(toOpenOrPrint: .success)
+        } else {
+            didOpen = false
         }
+        sender.reply(toOpenOrPrint: didOpen ? .success : .failure)
+    }
+
+    func application(_ sender: NSApplication, openFileWithoutUI filename: String) -> Bool {
+        AppModel.shared.openProject(at: URL(fileURLWithPath: filename))
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -100,9 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let projectArg = args.first(where: { ($0 as NSString).pathExtension == "xcodeproj" })
             ?? args.first(where: Self.isExistingDirectory)
         guard let path = projectArg else { return }
-        Task { @MainActor in
-            AppModel.shared.openProject(at: URL(fileURLWithPath: path))
-        }
+        _ = AppModel.shared.openProject(at: URL(fileURLWithPath: path))
     }
 
     private static func isExistingDirectory(_ path: String) -> Bool {
@@ -126,6 +132,62 @@ struct NoXcodeApp: App {
                 }
         }
         .handlesExternalEvents(matching: [])
+        .commands {
+            CommandGroup(after: .newItem) {
+                Menu("Open Recent") {
+                    if recentProjectURLs.isEmpty {
+                        Button("No Recent Projects") {}
+                            .disabled(true)
+                    } else {
+                        ForEach(recentProjectURLs, id: \.path) { url in
+                            Button(recentMenuTitle(for: url)) {
+                                openRecentProject(url)
+                            }
+                        }
+                        Divider()
+                        Button("Clear Menu") {
+                            NSDocumentController.shared.clearRecentDocuments(nil)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var recentProjectURLs: [URL] {
+        _ = model.projectLoadToken
+        var seen = Set<String>()
+        return NSDocumentController.shared.recentDocumentURLs.compactMap { url in
+            let resolved = url.standardizedFileURL
+            guard resolved.pathExtension == "xcodeproj" || FileManager.default.fileExists(atPath: resolved.path) else {
+                return nil
+            }
+            guard seen.insert(resolved.path).inserted else { return nil }
+            return resolved
+        }
+    }
+
+    private func openRecentProject(_ url: URL) {
+        if model.openProject(at: url) {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func recentMenuTitle(for url: URL) -> String {
+        let components = url.standardizedFileURL.pathComponents.filter { $0 != "/" }
+        if let worktreesIndex = components.firstIndex(of: "worktrees"),
+           worktreesIndex + 1 < components.count {
+            let worktreeName = components[worktreesIndex + 1]
+            return "[\(worktreeName)] " + condensedPath(components, keep: 4)
+        }
+        return condensedPath(components, keep: 3)
+    }
+
+    private func condensedPath(_ components: [String], keep: Int) -> String {
+        if components.count <= keep {
+            return "/" + components.joined(separator: "/")
+        }
+        return ".../" + components.suffix(keep).joined(separator: "/")
     }
 }
 
@@ -147,6 +209,7 @@ struct ContentView: View {
     @State private var selectedPhysicalDevices = Set<String>()
     @State private var log: String = ""
     @State private var isRunning = false
+    @State private var runTask: Task<Void, Never>?
     @State private var showProjectPicker = false
     @State private var configLoadStatus: String = ""
     @State private var isLoadingProjectInfo = false
@@ -319,12 +382,18 @@ struct ContentView: View {
                         .keyboardShortcut("s", modifiers: .command)
                         .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentTeal, textColor: LCARSTheme.textDark))
                         .disabled(isRunning)
-                    Button("Run") { Task { await runLaunch(rerun: false) } }
+                    Button("Run") { startLaunch(rerun: false) }
                         .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentOrange, textColor: LCARSTheme.textDark))
+                        .keyboardShortcut("r", modifiers: .command)
                         .disabled(isRunning)
-                    Button("Rerun") { Task { await runLaunch(rerun: true) } }
+                    Button("Rerun") { startLaunch(rerun: true) }
                         .buttonStyle(LCARSButtonStyle(accent: LCARSTheme.accentPurple, textColor: .white))
                         .disabled(isRunning)
+                    if isRunning {
+                        LCARSSpinner()
+                        Button("Cancel") { runTask?.cancel() }
+                            .buttonStyle(LCARSButtonStyle(accent: Color(red: 0.92, green: 0.32, blue: 0.28), textColor: .white))
+                    }
                 }
 
                 lcarsPanel(title: "Operations Log", accent: LCARSTheme.accentTeal) {
@@ -488,14 +557,23 @@ struct ContentView: View {
         }
     }
 
+    private func startLaunch(rerun: Bool) {
+        runTask?.cancel()
+        runTask = Task { await runLaunch(rerun: rerun) }
+    }
+
     private func runLaunch(rerun: Bool) async {
         log = ""
         isRunning = true
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            runTask = nil
+        }
         if !rerun {
             guard await saveConfig() else { return }
         }
         do {
+            try Task.checkCancellation()
             let config = try kit.readConfig(projectPath: projectPath)
             let workingDirectory = URL(fileURLWithPath: config.project).deletingLastPathComponent()
             try await kit.run(
@@ -504,6 +582,8 @@ struct ContentView: View {
                 rerun: rerun,
                 logger: ViewLogger(append: appendLog(_:))
             )
+        } catch is CancellationError {
+            appendLog("Run cancelled.")
         } catch {
             let action = rerun ? "Rerun" : "Run"
             appendLog("\(action) failed: \(error)")
@@ -896,20 +976,22 @@ private struct LCARSSpinner: View {
 private struct LCARSButtonStyle: ButtonStyle {
     let accent: Color
     let textColor: Color
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
+        let pressed = configuration.isPressed && isEnabled
         configuration.label
             .font(.system(size: 11, weight: .bold, design: .monospaced))
-            .foregroundStyle(textColor.opacity(configuration.isPressed ? 0.85 : 1))
+            .foregroundStyle(textColor.opacity(isEnabled ? (pressed ? 0.85 : 1) : 0.45))
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(
                 Capsule(style: .continuous)
-                    .fill(accent.opacity(configuration.isPressed ? 0.7 : 1))
+                    .fill(accent.opacity(isEnabled ? (pressed ? 0.7 : 1) : 0.28))
             )
             .overlay(
                 Capsule(style: .continuous)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                    .stroke(Color.white.opacity(isEnabled ? 0.15 : 0.06), lineWidth: 1)
             )
     }
 }

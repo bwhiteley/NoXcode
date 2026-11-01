@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct ProcessResult: Sendable {
@@ -29,6 +30,8 @@ public final class ProcessRunner: Sendable {
         environment: [String: String]? = nil,
         streamOutput: OutputHandler? = nil
     ) async throws -> ProcessResult {
+        try Task.checkCancellation()
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
@@ -64,6 +67,7 @@ public final class ProcessRunner: Sendable {
             streamOutput?(chunk, true)
         }
 
+        let cancelled = CancellationFlag()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessResult, Error>) in
                 let resumeGate = ContinuationResumeGate()
@@ -82,7 +86,7 @@ public final class ProcessRunner: Sendable {
                     let stderr = String(data: stderrBuffer.data, encoding: .utf8) ?? ""
                     let result = ProcessResult(exitCode: proc.terminationStatus, stdout: stdout, stderr: stderr)
                     resumeGate.run {
-                        if Task.isCancelled {
+                        if cancelled.isCancelled {
                             continuation.resume(throwing: CancellationError())
                         } else if proc.terminationStatus != 0 {
                             continuation.resume(
@@ -107,8 +111,21 @@ public final class ProcessRunner: Sendable {
                 }
             }
         } onCancel: {
-            if process.isRunning {
-                process.terminate()
+            cancelled.markCancelled()
+            Self.terminateProcess(process)
+        }
+    }
+
+    private static func terminateProcess(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        process.interrupt()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
+            guard process.isRunning else { return }
+            process.terminate()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
+                guard process.isRunning else { return }
+                kill(pid, SIGKILL)
             }
         }
     }
@@ -129,6 +146,23 @@ private final class OutputBuffer: @unchecked Sendable {
         let copy = storage
         lock.unlock()
         return copy
+    }
+}
+
+private final class CancellationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func markCancelled() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
 

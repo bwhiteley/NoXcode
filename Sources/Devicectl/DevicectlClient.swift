@@ -4,6 +4,9 @@ import ProcessRunner
 
 public final class DevicectlClient: Sendable {
     private let runner: ProcessRunner
+    /// CoreDevice's host service drops Mercury connections when several devicectl
+    /// processes talk to devices at once. Keep install, launch, and reconnect serial.
+    private let deviceCommands = DeviceCommandSerializer()
 
     public init(runner: ProcessRunner = ProcessRunner()) {
         self.runner = runner
@@ -32,10 +35,12 @@ public final class DevicectlClient: Sendable {
     }
 
     public func install(_ identifier: String, appPath: String) async throws {
-        _ = try await runner.run(
-            "/usr/bin/xcrun",
-            ["devicectl", "device", "install", "app", "--device", identifier, appPath]
-        )
+        try await withDeviceCommandLock {
+            _ = try await self.runner.run(
+                "/usr/bin/xcrun",
+                ["devicectl", "device", "install", "app", "--device", identifier, appPath]
+            )
+        }
     }
 
     public func launch(
@@ -64,7 +69,209 @@ public final class DevicectlClient: Sendable {
         launchArgs.append(bundleId)
         launchArgs += arguments
 
-        _ = try await runner.run("/usr/bin/xcrun", launchArgs)
+        let command = launchArgs
+        try await withDeviceCommandLock {
+            _ = try await self.runner.run("/usr/bin/xcrun", command)
+        }
+    }
+
+    /// Bring a paired device back to the state Device Hub reaches by selecting it.
+    ///
+    /// After a device sits idle, CoreDevice drops the tunnel and developer disk image
+    /// services. Selecting the device in Device Hub acquires a usage assertion and
+    /// enables those services, retrying when the Mercury connection is interrupted.
+    /// `devicectl device info ddiServices --auto-mount-ddis` does that work.
+    public func prepareForDeployment(
+        _ identifier: String,
+        displayName: String? = nil,
+        log: (@Sendable (String) -> Void)? = nil
+    ) async throws {
+        try await withDeviceCommandLock {
+            try await self.prepareForDeploymentWhileLocked(identifier, displayName: displayName, log: log)
+        }
+    }
+
+    /// Hold the device-command lock across awaits. An actor method that awaits the
+    /// work itself is reentrant, so two devicectl processes could still overlap.
+    private func withDeviceCommandLock<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        await deviceCommands.acquire()
+        do {
+            let value = try await operation()
+            await deviceCommands.release()
+            return value
+        } catch {
+            await deviceCommands.release()
+            throw error
+        }
+    }
+
+    private func prepareForDeploymentWhileLocked(
+        _ identifier: String,
+        displayName: String?,
+        log: (@Sendable (String) -> Void)?
+    ) async throws {
+        let name = displayName.flatMap { $0.isEmpty ? nil : $0 } ?? identifier
+        let snapshot = try await readConnectionSnapshot(identifier, displayName: name, log: log)
+        if snapshot?.developerModeEnabled == false {
+            throw DevicectlClientError.developerModeDisabled(device: name)
+        }
+        if snapshot?.pairingState?.lowercased() == "unpaired" {
+            log?("\(name) is not paired. Pairing now. Accept the trust prompt on the device if one appears.")
+            _ = try await runner.run(
+                "/usr/bin/xcrun",
+                ["devicectl", "manage", "pair", "--device", identifier, "--timeout", String(Self.pairingTimeoutSeconds)]
+            )
+        }
+
+        log?("Reconnecting \(name) and enabling developer services…")
+        try await enableDeveloperServices(identifier, displayName: name, log: log)
+        log?("Developer services ready on \(name).")
+    }
+
+    public static func isRetryableConnectionFailure(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        let text = String(describing: error).lowercased()
+        if text.contains("developer mode") || text.contains("device is locked") || text.contains("passcode") {
+            return false
+        }
+        let retryableMarkers = [
+            "coredeviceerror error 3 (",
+            "coredeviceerror error 4000",
+            "mercury.error",
+            "communicating with a remote process",
+            "connection was interrupted",
+            "connection was invalidated",
+            "connection reset by peer",
+            "controlchannelconnectionerror",
+            "remotepairingerror",
+            "could not be established",
+            "tunnel listener",
+            "connectivity was interrupted",
+            "network timed out",
+            "operations timed out",
+            "could not reach device",
+            "device is not connected"
+        ]
+        return retryableMarkers.contains { text.contains($0) }
+    }
+
+    private func readConnectionSnapshot(
+        _ identifier: String,
+        displayName: String,
+        log: (@Sendable (String) -> Void)?
+    ) async throws -> ConnectionSnapshot? {
+        do {
+            let data = try await runJSONCommand(
+                ["devicectl", "device", "info", "details", "--device", identifier],
+                timeoutSeconds: Self.connectionTimeoutSeconds
+            )
+            return try JSONDecoder().decode(DeviceDetailsResponse.self, from: data).snapshot
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            log?("Could not read status for \(displayName) (\(Self.summarize(error))). Trying to reconnect anyway.")
+            return nil
+        }
+    }
+
+    private func enableDeveloperServices(
+        _ identifier: String,
+        displayName: String,
+        log: (@Sendable (String) -> Void)?
+    ) async throws {
+        var lastError: Error?
+        for attempt in 1...Self.maxConnectionAttempts {
+            do {
+                let data = try await runJSONCommand(
+                    [
+                        "devicectl", "device", "info", "ddiServices",
+                        "--device", identifier,
+                        "--auto-mount-ddis"
+                    ],
+                    timeoutSeconds: Self.connectionTimeoutSeconds
+                )
+                let metadata = try JSONDecoder().decode(DDIServicesResponse.self, from: data).result.ddiMetadata
+                if metadata?.isUsable == false {
+                    throw DevicectlClientError.developerServicesUnavailable(device: displayName)
+                }
+                if metadata?.contentIsCompatible == false {
+                    throw DevicectlClientError.incompatibleDeveloperDiskImage(device: displayName)
+                }
+                return
+            } catch let error as CancellationError {
+                throw error
+            } catch {
+                lastError = error
+                let canRetry = attempt < Self.maxConnectionAttempts && Self.isRetryableConnectionFailure(error)
+                if !canRetry {
+                    throw error
+                }
+                let delay = Self.retryDelaySeconds(after: attempt)
+                log?(
+                    "\(displayName) dropped the connection (attempt \(attempt) of \(Self.maxConnectionAttempts)): \(Self.summarize(error)). Retrying in \(Int(delay))s…"
+                )
+                try await Task.sleep(for: .seconds(delay))
+                try await reviveTunnel(identifier, displayName: displayName, log: log)
+            }
+        }
+        throw lastError ?? DevicectlClientError.developerServicesUnavailable(device: displayName)
+    }
+
+    /// Open a fresh CoreDevice tunnel after Mercury interrupts the previous one.
+    private func reviveTunnel(
+        _ identifier: String,
+        displayName: String,
+        log: (@Sendable (String) -> Void)?
+    ) async throws {
+        do {
+            _ = try await runJSONCommand(
+                ["devicectl", "device", "info", "details", "--device", identifier],
+                timeoutSeconds: Self.connectionTimeoutSeconds
+            )
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            log?("\(displayName) is still waking up (\(Self.summarize(error))).")
+        }
+    }
+
+    private func runJSONCommand(_ arguments: [String], timeoutSeconds: Int) async throws -> Data {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("noxcode-devicectl-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        var command = arguments
+        command += ["--timeout", String(timeoutSeconds), "--json-output", outputURL.path]
+        _ = try await runner.run("/usr/bin/xcrun", command)
+        return try Data(contentsOf: outputURL)
+    }
+
+    private static func summarize(_ error: Error) -> String {
+        let raw: String
+        if case let ProcessRunnerError.nonZeroExit(_, _, stderr) = error {
+            raw = stderr
+        } else {
+            raw = String(describing: error)
+        }
+        let line = raw
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && !$0.hasPrefix("-") }
+            ?? raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.count <= 300 {
+            return line
+        }
+        return String(line.prefix(300)) + "…"
+    }
+
+    private static let connectionTimeoutSeconds = 60
+    private static let pairingTimeoutSeconds = 90
+    private static let maxConnectionAttempts = 5
+
+    private static func retryDelaySeconds(after attempt: Int) -> Double {
+        Double(min(2 * attempt, 8))
     }
 
     private static func makePhysicalDevice(from device: DevicectlDevice) -> PhysicalDevice? {
@@ -157,6 +364,47 @@ public final class DevicectlClient: Sendable {
     }
 }
 
+private actor DeviceCommandSerializer {
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !busy {
+            busy = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.resume()
+        } else {
+            busy = false
+        }
+    }
+}
+
+public enum DevicectlClientError: Error, CustomStringConvertible {
+    case developerModeDisabled(device: String)
+    case developerServicesUnavailable(device: String)
+    case incompatibleDeveloperDiskImage(device: String)
+
+    public var description: String {
+        switch self {
+        case let .developerModeDisabled(device):
+            return "Developer Mode is turned off on \(device). Turn it on in Settings → Privacy & Security → Developer Mode, then deploy again."
+        case let .developerServicesUnavailable(device):
+            return "Developer services on \(device) are not usable. Unlock the device, keep it awake, and deploy again."
+        case let .incompatibleDeveloperDiskImage(device):
+            return "The developer disk image for \(device) is not compatible with this Xcode. Open Xcode once so it can install a matching disk image, then deploy again."
+        }
+    }
+}
+
 private struct DevicectlListResponse: Decodable {
     let result: DevicectlResult
 }
@@ -223,4 +471,82 @@ private struct DevicectlLegacyConnectionProperties: Decodable {
     let state: String?
     let pairingState: String?
     let tunnelState: String?
+}
+
+private struct ConnectionSnapshot {
+    let pairingState: String?
+    let developerModeEnabled: Bool?
+}
+
+private struct DeviceDetailsResponse: Decodable {
+    let result: DeviceDetailsResult
+
+    var snapshot: ConnectionSnapshot {
+        ConnectionSnapshot(
+            pairingState: result.properties?.connection?.pairingState,
+            developerModeEnabled: result.properties?.state?.developerModeStatus?.isEnabled
+        )
+    }
+}
+
+private struct DeviceDetailsResult: Decodable {
+    let properties: DeviceDetailsProperties?
+}
+
+private struct DeviceDetailsProperties: Decodable {
+    let connection: DeviceDetailsConnection?
+    let state: DeviceDetailsState?
+}
+
+private struct DeviceDetailsConnection: Decodable {
+    let pairingState: String?
+}
+
+private struct DeviceDetailsState: Decodable {
+    let developerModeStatus: DeveloperModeStatusValue?
+}
+
+private struct DeveloperModeStatusValue: Decodable {
+    let isEnabled: Bool?
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.container(keyedBy: CodingKeys.self) {
+            if container.contains(.enabled) {
+                isEnabled = true
+            } else if container.contains(.disabled) {
+                isEnabled = false
+            } else {
+                isEnabled = nil
+            }
+            return
+        }
+
+        let string = try? decoder.singleValueContainer().decode(String.self)
+        switch string?.lowercased() {
+        case "enabled":
+            isEnabled = true
+        case "disabled":
+            isEnabled = false
+        default:
+            isEnabled = nil
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case disabled
+    }
+}
+
+private struct DDIServicesResponse: Decodable {
+    let result: DDIServicesResult
+}
+
+private struct DDIServicesResult: Decodable {
+    let ddiMetadata: DDIMetadata?
+}
+
+private struct DDIMetadata: Decodable {
+    let isUsable: Bool?
+    let contentIsCompatible: Bool?
 }
